@@ -4,9 +4,12 @@
   "version": "0.1.0",
   "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "build": "pnpm --filter @expense/shared build && pnpm --filter @expense/api build",
+    "build": "pnpm --filter @expense/shared build && pnpm --filter @expense/api build && pnpm --filter @expense/web build",
     "api:dev": "dotenv -e .env -- pnpm --filter @expense/api start:dev",
     "api:build": "pnpm --filter @expense/api build",
+    "web:dev": "pnpm --filter @expense/web dev",
+    "web:build": "pnpm --filter @expense/web build",
+    "dev": "pnpm run --parallel \"/^(api|web):dev$/\"",
     "shared:build": "pnpm --filter @expense/shared build",
     "db:up": "docker compose up -d db",
     "db:down": "docker compose down",
