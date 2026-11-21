@@ -1,0 +1,24 @@
+{
+  "name": "expense-reimbursement-app",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "build": "pnpm --filter @expense/shared build && pnpm --filter @expense/api build",
+    "api:dev": "dotenv -e .env -- pnpm --filter @expense/api start:dev",
+    "api:build": "pnpm --filter @expense/api build",
+    "shared:build": "pnpm --filter @expense/shared build",
+    "db:up": "docker compose up -d db",
+    "db:down": "docker compose down",
+    "prisma:generate": "dotenv -e .env -- pnpm --filter @expense/api prisma:generate",
+    "prisma:migrate:dev": "dotenv -e .env -- pnpm --filter @expense/api prisma:migrate:dev",
+    "prisma:migrate:deploy": "dotenv -e .env -- pnpm --filter @expense/api prisma:migrate:deploy",
+    "prisma:studio": "dotenv -e .env -- pnpm --filter @expense/api prisma:studio"
+  },
+  "devDependencies": {
+    "dotenv-cli": "^8.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,19 @@
+// Prisma schema for the expense reimbursement app.
+//
+// 決定事項（CLAUDE.md参照）:
+// - ID は UUID を使う（モデル追加時は `id String @id @default(uuid()) @db.Uuid` を基本形にする）
+// - 金額は円の整数（Decimal/Floatではなく Int、小数のない円単位）を使う
+// - 認証はCookieセッション（セッションはPostgreSQLに保存する想定。Session等のモデルは
+//   認証フローの仕様確定後に追加する）
+//
+// 現時点では基盤セットアップのみのため、業務テーブル（User, ExpenseRequest等）は
+// まだ定義していません。仕様確定後にモデルを追加してください。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
