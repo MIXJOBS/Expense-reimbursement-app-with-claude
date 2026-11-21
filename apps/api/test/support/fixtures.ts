@@ -1,16 +1,24 @@
 // e2eテスト用の共通フィクスチャヘルパー。
 //
-// 実装（AuthService等）がまだ存在しないため、ログインAPIを経由せず
-// PrismaService で User / Role / UserRole / Session を直接作成し、
-// Session.tokenHash に対応する「生のトークン文字列」をCookieとして
-// リクエストに付与することでログイン済み状態を再現する。
+// ログインAPIを経由せずに済ませたいテスト（ログイン自体を検証しない
+// 権限系テスト等）向けに、PrismaService で User / Role / UserRole /
+// Session を直接作成し、Session.tokenHash に対応する「生のトークン文字列」
+// をCookieとしてリクエストに付与することでログイン済み状態を再現できる
+// ようにしている（createSessionCookie）。
 //
-// 実装フェーズでハッシュ関数（SHA-256等）やCookie名が確定したら、
-// このファイル内の定数・ハッシュ化方法を実装に合わせて調整すること
-// （現時点ではドキュメント記載の「SHA-256等でハッシュ化」を仮採用）。
+// createUser() が保存する passwordHash は、apps/api/src/auth/auth.service.ts
+// の argon2.verify() で検証できる形式（argon2id）にする必要があるため、
+// apps/api/prisma/seed.ts と同じ `argon2.hash(password, { type: argon2.argon2id })`
+// を使ってハッシュ化する（実装側のパラメータ変更に追従する場合はここも合わせること）。
 import * as crypto from 'crypto';
+import * as argon2 from 'argon2';
 import { PrismaClient } from '@prisma/client';
 import { RoleName } from '@expense/shared';
+
+// createUser() 呼び出し側でパスワードを指定しない場合に使うデフォルトの
+// テスト用平文パスワード（本物の秘密情報ではない）。
+// ログイン自体を検証しないテスト（権限系・CSRF系等）の後方互換のために用意する。
+export const DEFAULT_TEST_PASSWORD = 'default-test-password-not-secret';
 
 // 実装確定前の仮の値。AuthModule実装時にCookie名が確定したら合わせること。
 export const SESSION_COOKIE_NAME = 'sid';
@@ -63,18 +71,25 @@ export async function createUser(
   params: {
     email: string;
     name?: string;
+    password?: string;
     isActive?: boolean;
     failedLoginCount?: number;
     lockedUntil?: Date | null;
     managerId?: string | null;
   },
 ): Promise<CreatedUser> {
+  // password未指定の既存呼び出し（ログイン自体を検証しないテスト）との
+  // 後方互換のため、デフォルトのテスト用平文パスワードを使う。
+  const passwordHash = await argon2.hash(
+    params.password ?? DEFAULT_TEST_PASSWORD,
+    { type: argon2.argon2id },
+  );
+
   const user = await prisma.user.create({
     data: {
       email: params.email,
       name: params.name ?? params.email,
-      // argon2での実ハッシュ化は不要（AuthServiceが無く検証ロジックも無いため）。
-      passwordHash: 'placeholder-not-a-real-hash',
+      passwordHash,
       isActive: params.isActive ?? true,
       failedLoginCount: params.failedLoginCount ?? 0,
       lockedUntil: params.lockedUntil ?? null,

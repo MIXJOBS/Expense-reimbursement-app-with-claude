@@ -1,10 +1,5 @@
 // PBI1（ログイン・ログアウト）の受け入れ条件に対応するe2eテスト。
 //
-// 前提：この時点では AuthModule / AuthController / AuthService / AuthGuard は
-// まだ実装されていない。そのため、本ファイルのテストは「想定どおりに失敗する」
-// （404 Not Found や接続エラー等）ことを確認するためのものであり、実装完了後に
-// 初めて意味のある合否判定ができるようになる。
-//
 // 担当範囲: *.spec.ts / e2e のみ。実装コード（Controller/Service/Guard/main.ts等）は書かない。
 import './support/env';
 import { Test, TestingModule } from '@nestjs/testing';
@@ -21,6 +16,10 @@ import {
   grantRole,
   uniqueEmail,
 } from './support/fixtures';
+
+// 本物の秘密情報ではない、テスト専用の平文パスワード。
+// createUser() に渡し、argon2でハッシュ化されたものがDBに保存される。
+const TEST_PASSWORD = 'correct-password-but-unverifiable';
 
 describe('Auth (e2e)', () => {
   let app: INestApplication;
@@ -76,18 +75,15 @@ describe('Auth (e2e)', () => {
 
   describe('POST /auth/login - 正常系', () => {
     it('正しいメール・パスワードでログインに成功し、Cookieが発行される', async () => {
-      // 実装（AuthService, argon2検証）が無いため、このテストは実装完了後にのみ
-      // 意味を持つ。現時点では平文パスワードでの比較すら成立しないため、
-      // 正しい資格情報を用意してもログインできない前提で書いている。
       const email = uniqueEmail('login-ok');
-      const user = await createUser(prisma, { email });
+      const user = await createUser(prisma, { email, password: TEST_PASSWORD });
       createdUserIds.push(user.id);
       await grantRole(prisma, user.id, applicantRoleId);
 
       const res = await request(app.getHttpServer())
         .post('/auth/login')
         .set('Origin', ALLOWED_ORIGIN)
-        .send({ email, password: 'correct-password-but-unverifiable' });
+        .send({ email, password: TEST_PASSWORD });
 
       expect(res.status).toBe(200);
       expect(res.body?.user?.email).toBe(email);
@@ -136,6 +132,7 @@ describe('Auth (e2e)', () => {
       const wrongPasswordEmail = uniqueEmail('wrong-password');
       const wrongPasswordUser = await createUser(prisma, {
         email: wrongPasswordEmail,
+        password: TEST_PASSWORD,
       });
       createdUserIds.push(wrongPasswordUser.id);
 
