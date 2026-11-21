@@ -15,6 +15,8 @@
 
 ## よく使うコマンド
 
+- e2eテスト（apps/api）: `pnpm test:e2e:api`（内部で`.env.test`を使ったテスト専用DB（`expense_test`）へのmigrate deploy→seed→jest実行を行う。開発用DB（`.env`の`expense`）は汚さない）
+
 ## チームの進め方
 
 4人の役割と担当範囲

@@ -11,6 +11,9 @@ services:
       - "${POSTGRES_PORT}:5432"
     volumes:
       - expense-db-data:/var/lib/postgresql/data
+      # docker-entrypoint-initdb.d配下のSQLは「新規ボリューム作成時」のみ実行される。
+      # 既存のexpense-db-dataボリュームには影響しない（既に初期化済みのため再実行されない）。
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
