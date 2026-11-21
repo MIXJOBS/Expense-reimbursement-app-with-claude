@@ -6,8 +6,8 @@
 // - 認証はCookieセッション（セッションはPostgreSQLに保存する想定。Session等のモデルは
 //   認証フローの仕様確定後に追加する）
 //
-// 現時点では基盤セットアップのみのため、業務テーブル（User, ExpenseRequest等）は
-// まだ定義していません。仕様確定後にモデルを追加してください。
+// 以下、PBI1（ログイン・ログアウト）・PBI2（ロールと権限）で確定した設計を反映。
+// ExpenseRequest等の経費申請系テーブルは未定義のため、仕様確定後に追加すること。
 
 generator client {
   provider = "prisma-client-js"
@@ -16,4 +16,154 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// User
+// ============================================================
+// - ロール名は packages/shared 側で定数管理する（Role.name は string だが
+//   アプリ側では RoleName のUnion型に閉じて扱う）
+// - ログイン失敗回数・ロックアウトはUser本体に持たせる方針。
+//   理由：現在ロック中かどうかの判定にはUser1行のみ見れば済み、
+//   更新も1行のUPDATEで完結するため競合が起きにくい。
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String // argon2id のハッシュ文字列のみ保存。平文は保持しない。
+  name         String
+
+  // 自己参照：上長
+  managerId    String? @db.Uuid
+  manager      User?   @relation("UserManager", fields: [managerId], references: [id], onDelete: SetNull)
+  subordinates User[]  @relation("UserManager")
+
+  // ログイン失敗・ロックアウト管理（PBI1: 5回連続失敗で15分ロック）
+  failedLoginCount Int       @default(0)
+  lockedUntil      DateTime? // nullならロックされていない。now() < lockedUntil ならログイン拒否。
+
+  // 退職者等の論理削除フラグ。
+  // - false の場合ログイン不可（エラーは AUTH_INVALID_CREDENTIALS に統一。
+  //   ユーザー列挙対策として「無効化されている」ことは個別に教えない）
+  // - false にする操作（無効化実行）は現時点のAPIスコープ外（将来PBI）。
+  //   ただし「無効化された瞬間に全セッション破棄」は要件のため、無効化を実行する
+  //   Service（将来実装）は必ず User.isActive 更新と Session 一括失効を
+  //   同一トランザクションで行う設計にする（スキーマ上は Session.userId の
+  //   リレーションで一括 UPDATE できる形になっている）。
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  roles        UserRole[] @relation("UserRoleToUser")
+  grantedRoles UserRole[] @relation("UserRoleGrantedBy") // 自分が付与したロール付与履歴
+  sessions     Session[]
+
+  // 申請・監査ログ等の業務データが紐づく可能性があるため、Userはハードデリート不可の方針。
+  // Userへの参照は基本的に onDelete: Restrict または SetNull とし、安易な連鎖削除を防ぐ。
+  // ただし UserRole・Session は「Userに従属し、Userが消えたら一緒に消えるべきデータ」
+  // であるため例外的に Cascade とする（これはUser自体の削除経路を提供する意味ではなく、
+  // User自体の削除経路はアプリケーションとして提供しない。運用上は isActive=false のみ）。
+
+  @@map("users")
+}
+
+// ============================================================
+// Role
+// ============================================================
+// ロール名そのものの値（"APPLICANT" 等）は packages/shared の RoleName 定数で
+// 一元管理し、DB上はマスタテーブルとして持つ（将来ロール追加がDBマイグレーションで
+// 対応できるように name は unique な string とする）。
+model Role {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @unique // packages/shared の RoleName のいずれかの値を想定
+  createdAt DateTime @default(now())
+
+  users UserRole[]
+
+  @@map("roles")
+}
+
+// ============================================================
+// UserRole（User と Role の中間テーブル）
+// ============================================================
+// - 誰が・いつ付与したかを残す（監査ログ本体はSprint3だが、最低限の
+//   付与者・付与日時はここに持たせておくことで、監査ログInterceptor側で
+//   変更前後の値を組み立てやすくする）
+model UserRole {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId String @db.Uuid
+  user   User   @relation("UserRoleToUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  roleId String @db.Uuid
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  grantedById String? @db.Uuid // 付与した管理者のUser.id（システム初期投入等でnull許容）
+  grantedBy   User?   @relation("UserRoleGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
+
+  grantedAt DateTime @default(now())
+
+  // 「最後のADMIN剥奪防止」チェックの排他制御（確定：悲観ロック）：
+  // DELETE /admin/users/:userId/roles/:roleId の処理中、Prismaの $transaction 内で
+  // ADMINロールを持つ UserRole 行集合に対して SELECT ... FOR UPDATE 相当の
+  // 行ロックをかけた上で件数を数え、剥奪後に0件になる場合は拒否する。
+  // Prismaの標準API（findMany等）は FOR UPDATE を発行できないため、実装時は
+  // $transaction 内で $queryRaw（Prisma.sql）を使い
+  // 「SELECT ... FROM user_roles ... WHERE role_id = :adminRoleId FOR UPDATE」
+  // を発行してロック取得→カウント→DELETEを同一トランザクションで行う方式を取る
+  // （楽観ロック(updatedAtやバージョン列での競合検出)ではなく、悲観ロックで
+  // 同時剥奪のレースコンディションそのものを未然に防ぐ）。
+  @@unique([userId, roleId]) // 同一ユーザーに同一ロールを重複付与しない
+  @@map("user_roles")
+}
+
+// ============================================================
+// Session
+// ============================================================
+// - Cookieに載せるセッションIDは「推測不能なランダム文字列」を想定するため、
+//   id自体をUUIDにせず、別途「tokenHash」でDB検索する設計にする
+//   （セッションIDをそのままDBキーにしてしまうと、DBダンプ漏洩時に
+//   Cookie値が直接露出するリスクがあるため、平文トークンはハッシュ化して保存）。
+// - ロール情報は持たない：セッションにロールをキャッシュせず、リクエスト毎にDBから
+//   User→UserRoleを引いて権限判定する方針。これにより、管理者がロールを外した瞬間、
+//   次のリクエストから即座に反映される（セッション無効化やキャッシュ破棄の仕組みを
+//   別途作る必要がない）。
+// - ログイン成功時のセッションID再発行（セッション固定対策）は、
+//   「新規Sessionレコードを作り、旧レコードをrevoke（revokedAt設定）する」
+//   運用で実現できる形にしておく。
+model Session {
+  id String @id @default(uuid()) @db.Uuid
+
+  // Cookieに実際にセットする値はランダムな文字列(例: 32byte以上)。
+  // DBには生の値を保存せず、SHA-256等でハッシュ化したものを保存する。
+  tokenHash String @unique
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  userAgent String?
+  ipAddress String?
+
+  // 絶対有効期限：ログイン成功時に now + 8h で固定し、以後更新しない。
+  // この時刻を過ぎたら無条件で失効（スライディング判定より優先して先にチェック可）。
+  expiresAt DateTime
+
+  // 論理失効（ログアウト・再発行・無効化実行時にセット）。
+  // 退職者無効化（isActive=false）実行時は、対象Userの全Session.revokedAtを
+  // 一括更新することで「即ログアウト」を実現する想定（実行API自体は将来PBI）。
+  revokedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  // スライディング有効期限の判定基準：now - lastSeenAt > 30分 の場合は失効。
+  // 更新方針（確定）：毎リクエストではなく「前回更新から1分以上経過していた場合のみ
+  // UPDATE する」間引きを行う。これにより書き込み負荷を抑えつつ、スライディング判定
+  // (30分)の精度には実用上影響しない（1分の誤差は許容範囲）。
+  // 実装イメージ（方針のみ、コードはここでは書かない）：
+  //   if (now - session.lastSeenAt >= 1min) { UPDATE lastSeenAt = now }
+  //   else { UPDATE はスキップし、既存の lastSeenAt のまま判定続行 }
+  lastSeenAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("sessions")
 }

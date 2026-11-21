@@ -1,6 +1,10 @@
 // このファイルは packages/shared の公開エントリポイントです。
 // ここに、API(apps/api)とフロント(apps/web)で共有する型・定数
-// （例: ロール名、申請ステータスなど）を定義し re-export していく想定です。
+// （例: ロール名、申請ステータスなど）を定義し re-export していきます。
 //
-// 現時点(基盤セットアップのみ)では仕様が未確定のため、具体的な型は未実装です。
-export {};
+// PBI1（ログイン・ログアウト）・PBI2（ロールと権限）で確定した型・定数を公開します。
+export * from './roles';
+export * from './errors';
+export * from './auth';
+export * from './admin';
+export * from './audit';
