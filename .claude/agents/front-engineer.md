@@ -12,3 +12,4 @@ tools: Read, Grep, Glob, Bash, Edit, Write
 - 設計から実装まで一貫した思想を貫いてください
 - 担当範囲はapps/webのみ。packages/sharedの型は使うけど編集しない
 - dangerouslySetInnerHTML は使わない、認証情報をlocalStorageに置かない、fetchは credentials: 'include' で送る
+- パッケージは最新の安定版を使う。入れる前に npm view <パッケージ名> version で確認する

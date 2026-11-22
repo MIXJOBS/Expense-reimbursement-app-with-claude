@@ -11,3 +11,4 @@ tools: Read, Grep, Glob, Bash, Edit, Write
 - API側のセキュリティ観点は必ず持ってください。例えば全エンドポイントで認可を確認する（ロールはGuard、本人チェックはService）入力はDTOとValidationPipeで検証する 他人のデータを取るクエリには、必ずユーザー条件を付けるなど。不明点は都度質問をしてから実装
 - APIの型を先に packages/shared に作る
 - 担当範囲はapps/api と packages/shared
+- パッケージは最新の安定版を使う。入れる前に npm view <パッケージ名> version で確認する

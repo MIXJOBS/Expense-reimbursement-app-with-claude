@@ -16,6 +16,9 @@
 ## よく使うコマンド
 
 - e2eテスト（apps/api）: `pnpm test:e2e:api`（内部で`.env.test`を使ったテスト専用DB（`expense_test`）へのmigrate deploy→seed→jest実行を行う。開発用DB（`.env`の`expense`）は汚さない）
+- 開発用API起動：pnpm api:dev
+- e2eテスト：pnpm test:e2e:api（.env.testを使う）
+- 脆弱性チェック：pnpm audit / pnpm audit --prod
 
 ## チームの進め方
 
@@ -43,7 +46,7 @@ DoD：全PBI共通で、以下をすべて満たしたものだけを「完了�
 1. 認可：全APIをログイン必須にし、公開APIだけ @Public() で例外にする。ロールはGuard、申請者本人かどうかはServiceで判定する
 2. 入力検証：DTO＋ValidationPipe（whitelist、forbidNonWhitelisted）で想定外の項目を拒否する
 3. エラー形式：{ code, message } に統一。500の詳細は返さず、他人の申請には404を返す
-4. 監査ログ：誰が・いつ・何に・何をしたかと変更前後の値を、Interceptorで記録する
+4. 監査ログ：誰が・いつ・何に・何をしたかと変更前後の値を、Interceptorで記録する（実装はSprint 3のPBI 6。それまでは未実装でよい）
 5. ログ出力：パスワード・Cookie・トークンは出力しない
 
 ## リポジトリ構成
