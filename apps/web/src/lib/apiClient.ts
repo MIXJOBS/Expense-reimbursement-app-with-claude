@@ -6,9 +6,12 @@
 // - 認証フロー・トークン保持・リトライ等の本格実装は別PBIで行うため、
 //   ここでは最低限のGET/POSTラッパーのみ用意する。
 //
-// 使用例が未確定の型は packages/shared 側の実装待ち。
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import type {} from '@expense/shared';
+// パスについて：apps/api側のAuthControllerは @Controller('auth') であり、
+// 実際のエンドポイントは /auth/login・/auth/logout・/auth/me で、/api プレフィックスは
+// 存在しない（/admin 配下の管理APIも同様）。そのため呼び出し側は '/auth/login' のように
+// プレフィックスなしのパスをそのまま渡す想定とし、ここで '/api' を付け足さない
+// （vite.config.ts のプロキシ設定も /auth, /admin を対象にしている）。
+import type { ApiErrorBody } from '@expense/shared';
 
 export class ApiError extends Error {
   readonly code: string;
@@ -23,7 +26,7 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/api${path}`, {
+  const response = await fetch(path, {
     ...init,
     credentials: 'include',
     headers: {
@@ -33,7 +36,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    const body = await response.json().catch(() => null);
+    const body: ApiErrorBody | null = await response.json().catch(() => null);
     throw new ApiError(
       response.status,
       body?.code ?? 'UNKNOWN_ERROR',

@@ -10,3 +10,86 @@ body {
     'Segoe UI',
     sans-serif;
 }
+
+.app-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+}
+
+.auth-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 1rem;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 360px;
+  padding: 2rem;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+}
+
+.auth-form h1 {
+  margin: 0 0 1rem;
+  font-size: 1.25rem;
+}
+
+.auth-form label {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.auth-form input {
+  padding: 0.5rem;
+  font-size: 1rem;
+  border: 1px solid #999;
+  border-radius: 4px;
+}
+
+.auth-form button {
+  margin-top: 1rem;
+  padding: 0.625rem;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.auth-error {
+  margin: 0;
+  color: #b00020;
+  font-size: 0.875rem;
+}
+
+.home-page {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+.home-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.home-user-info dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.5rem 1rem;
+}
+
+.home-user-info dt {
+  font-weight: 600;
+}
+
+.home-user-info dd {
+  margin: 0;
+}
