@@ -19,5 +19,18 @@
       "Read(./.env.*)",
       "Bash(git push --force *)"
     ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "terminal-notifier -title \"Claude Code\" -subtitle \"🏁処理終了！\" -message \"✅タスクが完了しました！\nクリックしてVSCodeを開く\" -activate \"com.microsoft.VSCode\" -sound \"Glass\""
+          }
+        ]
+      }
+    ]
   }
 }
