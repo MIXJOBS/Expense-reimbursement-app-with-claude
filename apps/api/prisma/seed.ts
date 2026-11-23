@@ -40,7 +40,9 @@ async function main(): Promise<void> {
   }
 
   // 2. 初期管理者 User を upsert（パスワードはargon2idでハッシュ化）
-  const passwordHash = await argon2.hash(seedAdminPassword, { type: argon2.argon2id });
+  const passwordHash = await argon2.hash(seedAdminPassword, {
+    type: argon2.argon2id,
+  });
 
   const adminUser = await prisma.user.upsert({
     where: { email: SEED_ADMIN_EMAIL },
@@ -74,7 +76,9 @@ async function main(): Promise<void> {
   });
 
   console.log(`[seed] Role x${roleByName.size} 件 投入済み`);
-  console.log(`[seed] 初期管理者 User (${SEED_ADMIN_EMAIL}) に ADMIN ロールを付与済み`);
+  console.log(
+    `[seed] 初期管理者 User (${SEED_ADMIN_EMAIL}) に ADMIN ロールを付与済み`,
+  );
 }
 
 main()
