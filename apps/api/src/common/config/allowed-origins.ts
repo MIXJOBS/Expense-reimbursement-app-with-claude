@@ -41,7 +41,8 @@ export function getAllowedOrigins(): Set<string> {
 // production環境でALLOWED_ORIGINSが未設定のままアプリが起動することを防ぐ。
 export function assertAllowedOriginsConfigured(): void {
   const raw = process.env.ALLOWED_ORIGINS;
-  const isConfigured = typeof raw === 'string' && parseAllowedOrigins(raw).length > 0;
+  const isConfigured =
+    typeof raw === 'string' && parseAllowedOrigins(raw).length > 0;
 
   if (!isConfigured && isProductionEnv()) {
     throw new Error(

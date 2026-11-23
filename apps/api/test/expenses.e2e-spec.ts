@@ -230,20 +230,28 @@ describe('Expenses (e2e)', () => {
 
     describe('異常系：内容の検証', () => {
       it('400 VALIDATION_ERROR: 内容が201文字以上', async () => {
-        const { cookieHeader } = await createLoggedInUser('description-too-long');
+        const { cookieHeader } = await createLoggedInUser(
+          'description-too-long',
+        );
 
         const res = await request(app.getHttpServer())
           .post('/expenses')
           .set('Origin', ALLOWED_ORIGIN)
           .set('Cookie', cookieHeader)
-          .send(validBody({ description: 'a'.repeat(EXPENSE_DESCRIPTION_MAX_LENGTH + 1) }));
+          .send(
+            validBody({
+              description: 'a'.repeat(EXPENSE_DESCRIPTION_MAX_LENGTH + 1),
+            }),
+          );
 
         expect(res.status).toBe(400);
         expect(res.body).toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
       });
 
       it('正常系：内容が200文字（境界値）は通る', async () => {
-        const { cookieHeader } = await createLoggedInUser('description-boundary');
+        const { cookieHeader } = await createLoggedInUser(
+          'description-boundary',
+        );
         const description = 'a'.repeat(EXPENSE_DESCRIPTION_MAX_LENGTH);
 
         const res = await request(app.getHttpServer())
@@ -262,7 +270,9 @@ describe('Expenses (e2e)', () => {
 
     describe('異常系：想定外のプロパティ（status・applicantId）', () => {
       it('400 VALIDATION_ERROR: statusを送ると拒否される（forbidNonWhitelisted）', async () => {
-        const { cookieHeader } = await createLoggedInUser('create-extra-status');
+        const { cookieHeader } = await createLoggedInUser(
+          'create-extra-status',
+        );
 
         const res = await request(app.getHttpServer())
           .post('/expenses')
@@ -275,7 +285,9 @@ describe('Expenses (e2e)', () => {
       });
 
       it('400 VALIDATION_ERROR: applicantIdを送ると拒否される（forbidNonWhitelisted）', async () => {
-        const { cookieHeader } = await createLoggedInUser('create-extra-applicant');
+        const { cookieHeader } = await createLoggedInUser(
+          'create-extra-applicant',
+        );
 
         const res = await request(app.getHttpServer())
           .post('/expenses')
@@ -342,7 +354,8 @@ describe('Expenses (e2e)', () => {
     });
 
     it('正常系：1ページ20件（EXPENSE_LIST_PAGE_SIZE）で、page=1とpage=2で分割される', async () => {
-      const { userId, cookieHeader } = await createLoggedInUser('list-pagination');
+      const { userId, cookieHeader } =
+        await createLoggedInUser('list-pagination');
 
       const totalCount = EXPENSE_LIST_PAGE_SIZE + 3;
       for (let i = 0; i < totalCount; i++) {
@@ -365,24 +378,27 @@ describe('Expenses (e2e)', () => {
         .set('Cookie', cookieHeader);
 
       expect(page2.status).toBe(200);
-      expect(page2.body.items).toHaveLength(totalCount - EXPENSE_LIST_PAGE_SIZE);
+      expect(page2.body.items).toHaveLength(
+        totalCount - EXPENSE_LIST_PAGE_SIZE,
+      );
     });
 
     describe('異常系：pageクエリの検証', () => {
-      it.each([['0', '0'], ['-1', '-1'], ['abc（数値でない）', 'abc']])(
-        '400 VALIDATION_ERROR: page=%s',
-        async (_label, page) => {
-          const { cookieHeader } = await createLoggedInUser('list-page-invalid');
+      it.each([
+        ['0', '0'],
+        ['-1', '-1'],
+        ['abc（数値でない）', 'abc'],
+      ])('400 VALIDATION_ERROR: page=%s', async (_label, page) => {
+        const { cookieHeader } = await createLoggedInUser('list-page-invalid');
 
-          const res = await request(app.getHttpServer())
-            .get('/expenses')
-            .query({ page })
-            .set('Cookie', cookieHeader);
+        const res = await request(app.getHttpServer())
+          .get('/expenses')
+          .query({ page })
+          .set('Cookie', cookieHeader);
 
-          expect(res.status).toBe(400);
-          expect(res.body).toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
-        },
-      );
+        expect(res.status).toBe(400);
+        expect(res.body).toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+      });
     });
 
     describe('権限系', () => {
@@ -478,7 +494,8 @@ describe('Expenses (e2e)', () => {
 
     describe('異常系：想定外のプロパティ（status・applicantId）', () => {
       it('400 VALIDATION_ERROR: statusを送ると拒否される', async () => {
-        const { userId, cookieHeader } = await createLoggedInUser('edit-extra-status');
+        const { userId, cookieHeader } =
+          await createLoggedInUser('edit-extra-status');
         const expense = await createExpense({ applicantId: userId });
 
         const res = await request(app.getHttpServer())
@@ -492,7 +509,9 @@ describe('Expenses (e2e)', () => {
       });
 
       it('400 VALIDATION_ERROR: applicantIdを送ると拒否される', async () => {
-        const { userId, cookieHeader } = await createLoggedInUser('edit-extra-applicant');
+        const { userId, cookieHeader } = await createLoggedInUser(
+          'edit-extra-applicant',
+        );
         const expense = await createExpense({ applicantId: userId });
 
         const res = await request(app.getHttpServer())
@@ -565,23 +584,26 @@ describe('Expenses (e2e)', () => {
         [ExpenseStatus.SUBMITTED],
         [ExpenseStatus.APPROVED],
         [ExpenseStatus.ACCOUNTING_CONFIRMED],
-      ])('409 CONFLICT_INVALID_STATUS: ステータスが%sの申請を編集しようとする', async (status) => {
-        const { userId, cookieHeader } = await createLoggedInUser(
-          `edit-invalid-status-${status.toLowerCase()}`,
-        );
-        const expense = await createExpense({ applicantId: userId, status });
+      ])(
+        '409 CONFLICT_INVALID_STATUS: ステータスが%sの申請を編集しようとする',
+        async (status) => {
+          const { userId, cookieHeader } = await createLoggedInUser(
+            `edit-invalid-status-${status.toLowerCase()}`,
+          );
+          const expense = await createExpense({ applicantId: userId, status });
 
-        const res = await request(app.getHttpServer())
-          .put(`/expenses/${expense.id}`)
-          .set('Origin', ALLOWED_ORIGIN)
-          .set('Cookie', cookieHeader)
-          .send(validBody());
+          const res = await request(app.getHttpServer())
+            .put(`/expenses/${expense.id}`)
+            .set('Origin', ALLOWED_ORIGIN)
+            .set('Cookie', cookieHeader)
+            .send(validBody());
 
-        expect(res.status).toBe(409);
-        expect(res.body).toMatchObject({
-          code: ErrorCode.CONFLICT_INVALID_STATUS,
-        });
-      });
+          expect(res.status).toBe(409);
+          expect(res.body).toMatchObject({
+            code: ErrorCode.CONFLICT_INVALID_STATUS,
+          });
+        },
+      );
     });
   });
 
@@ -652,7 +674,8 @@ describe('Expenses (e2e)', () => {
 
     describe('CSRF対策', () => {
       it('403 FORBIDDEN: 許可されていないOriginからのDELETE', async () => {
-        const { userId, cookieHeader } = await createLoggedInUser('delete-csrf');
+        const { userId, cookieHeader } =
+          await createLoggedInUser('delete-csrf');
         const expense = await createExpense({ applicantId: userId });
 
         const res = await request(app.getHttpServer())
@@ -670,25 +693,29 @@ describe('Expenses (e2e)', () => {
         [ExpenseStatus.SUBMITTED],
         [ExpenseStatus.APPROVED],
         [ExpenseStatus.ACCOUNTING_CONFIRMED],
-      ])('409 CONFLICT_INVALID_STATUS: ステータスが%sの申請を削除しようとする', async (status) => {
-        const { userId, cookieHeader } = await createLoggedInUser(
-          `delete-invalid-status-${status.toLowerCase()}`,
-        );
-        const expense = await createExpense({ applicantId: userId, status });
+      ])(
+        '409 CONFLICT_INVALID_STATUS: ステータスが%sの申請を削除しようとする',
+        async (status) => {
+          const { userId, cookieHeader } = await createLoggedInUser(
+            `delete-invalid-status-${status.toLowerCase()}`,
+          );
+          const expense = await createExpense({ applicantId: userId, status });
 
-        const res = await request(app.getHttpServer())
-          .delete(`/expenses/${expense.id}`)
-          .set('Origin', ALLOWED_ORIGIN)
-          .set('Cookie', cookieHeader);
+          const res = await request(app.getHttpServer())
+            .delete(`/expenses/${expense.id}`)
+            .set('Origin', ALLOWED_ORIGIN)
+            .set('Cookie', cookieHeader);
 
-        expect(res.status).toBe(409);
-        expect(res.body).toMatchObject({
-          code: ErrorCode.CONFLICT_INVALID_STATUS,
-        });
-      });
+          expect(res.status).toBe(409);
+          expect(res.body).toMatchObject({
+            code: ErrorCode.CONFLICT_INVALID_STATUS,
+          });
+        },
+      );
 
       it('409 CONFLICT_INVALID_STATUS: 差し戻し(RETURNED)中の申請を削除しようとする（編集は許可だが削除は禁止）', async () => {
-        const { userId, cookieHeader } = await createLoggedInUser('delete-returned');
+        const { userId, cookieHeader } =
+          await createLoggedInUser('delete-returned');
         const expense = await createExpense({
           applicantId: userId,
           status: ExpenseStatus.RETURNED,
@@ -712,9 +739,8 @@ describe('Expenses (e2e)', () => {
   // ============================================================
   describe('POST /expenses/:id/submit - 提出', () => {
     it('正常系：上長が設定されている申請者が、自分のDRAFT申請を提出すると200でSUBMITTEDになる', async () => {
-      const { userId, cookieHeader } = await createLoggedInUserWithManager(
-        'submit-ok',
-      );
+      const { userId, cookieHeader } =
+        await createLoggedInUserWithManager('submit-ok');
       const expense = await createExpense({ applicantId: userId });
 
       const res = await request(app.getHttpServer())
@@ -735,9 +761,8 @@ describe('Expenses (e2e)', () => {
     });
 
     it('正常系：差し戻し(RETURNED)の申請を再提出すると200でSUBMITTEDになる（上長設定済み）', async () => {
-      const { userId, cookieHeader } = await createLoggedInUserWithManager(
-        'submit-returned',
-      );
+      const { userId, cookieHeader } =
+        await createLoggedInUserWithManager('submit-returned');
       const expense = await createExpense({
         applicantId: userId,
         status: ExpenseStatus.RETURNED,
@@ -756,9 +781,8 @@ describe('Expenses (e2e)', () => {
     });
 
     it('409 CONFLICT_MANAGER_NOT_SET: 上長未設定のユーザーが提出しようとすると409', async () => {
-      const { userId, cookieHeader } = await createLoggedInUser(
-        'submit-no-manager',
-      );
+      const { userId, cookieHeader } =
+        await createLoggedInUser('submit-no-manager');
       const expense = await createExpense({ applicantId: userId });
 
       const res = await request(app.getHttpServer())
@@ -777,22 +801,25 @@ describe('Expenses (e2e)', () => {
         [ExpenseStatus.SUBMITTED],
         [ExpenseStatus.APPROVED],
         [ExpenseStatus.ACCOUNTING_CONFIRMED],
-      ])('409 CONFLICT_INVALID_STATUS: ステータスが%sの申請を提出しようとする（二重提出含む）', async (status) => {
-        const { userId, cookieHeader } = await createLoggedInUserWithManager(
-          `submit-invalid-status-${status.toLowerCase()}`,
-        );
-        const expense = await createExpense({ applicantId: userId, status });
+      ])(
+        '409 CONFLICT_INVALID_STATUS: ステータスが%sの申請を提出しようとする（二重提出含む）',
+        async (status) => {
+          const { userId, cookieHeader } = await createLoggedInUserWithManager(
+            `submit-invalid-status-${status.toLowerCase()}`,
+          );
+          const expense = await createExpense({ applicantId: userId, status });
 
-        const res = await request(app.getHttpServer())
-          .post(`/expenses/${expense.id}/submit`)
-          .set('Origin', ALLOWED_ORIGIN)
-          .set('Cookie', cookieHeader);
+          const res = await request(app.getHttpServer())
+            .post(`/expenses/${expense.id}/submit`)
+            .set('Origin', ALLOWED_ORIGIN)
+            .set('Cookie', cookieHeader);
 
-        expect(res.status).toBe(409);
-        expect(res.body).toMatchObject({
-          code: ErrorCode.CONFLICT_INVALID_STATUS,
-        });
-      });
+          expect(res.status).toBe(409);
+          expect(res.body).toMatchObject({
+            code: ErrorCode.CONFLICT_INVALID_STATUS,
+          });
+        },
+      );
     });
 
     describe('権限系', () => {
@@ -825,7 +852,9 @@ describe('Expenses (e2e)', () => {
       });
 
       it('401 AUTH_UNAUTHORIZED: 未ログイン（Cookie無し）', async () => {
-        const owner = await createLoggedInUserWithManager('submit-unauth-owner');
+        const owner = await createLoggedInUserWithManager(
+          'submit-unauth-owner',
+        );
         const expense = await createExpense({ applicantId: owner.userId });
 
         const res = await request(app.getHttpServer())
@@ -839,9 +868,8 @@ describe('Expenses (e2e)', () => {
 
     describe('CSRF対策', () => {
       it('403 FORBIDDEN: 許可されていないOriginからのPOST submit', async () => {
-        const { userId, cookieHeader } = await createLoggedInUserWithManager(
-          'submit-csrf',
-        );
+        const { userId, cookieHeader } =
+          await createLoggedInUserWithManager('submit-csrf');
         const expense = await createExpense({ applicantId: userId });
 
         const res = await request(app.getHttpServer())

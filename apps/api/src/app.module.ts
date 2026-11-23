@@ -8,6 +8,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { CommonModule } from './common/common.module';
 import { AuthModule } from './auth/auth.module';
 import { AdminModule } from './admin/admin.module';
+import { ExpensesModule } from './expenses/expenses.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { AdminModule } from './admin/admin.module';
     CommonModule,
     AuthModule,
     AdminModule,
+    ExpensesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

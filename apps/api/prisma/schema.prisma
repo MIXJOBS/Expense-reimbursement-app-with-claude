@@ -7,8 +7,9 @@
 //   認証フローの仕様確定後に追加する）
 //
 // 以下、PBI1（ログイン・ログアウト）・PBI2（ロールと権限）で確定した設計を反映。
-// PBI3（経費申請の登録・編集）で ExpenseRequest を追加。承認・差し戻し（RETURNED）・
-// 経理確認（承認者・承認日時・差し戻し理由等のカラム）はPBI4・5のスコープのため、
+// PBI3（経費申請の登録・編集）で ExpenseRequest を追加。
+// PBI4（承認・差し戻し）で ExpenseRequest に approverId・returnReason を追加。
+// 経理確認（確認者・確認日時等のカラム）はPBI5のスコープのため、
 // 現時点では追加しない（詳細は ExpenseRequest モデルのコメント参照）。
 
 generator client {
@@ -56,10 +57,11 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  roles           UserRole[]       @relation("UserRoleToUser")
-  grantedRoles    UserRole[]       @relation("UserRoleGrantedBy") // 自分が付与したロール付与履歴
-  sessions        Session[]
-  expenseRequests ExpenseRequest[] // 自分が申請者である経費申請（PBI3）
+  roles                    UserRole[]       @relation("UserRoleToUser")
+  grantedRoles             UserRole[]       @relation("UserRoleGrantedBy") // 自分が付与したロール付与履歴
+  sessions                 Session[]
+  expenseRequests          ExpenseRequest[] @relation("ExpenseRequestApplicant") // 自分が申請者である経費申請（PBI3）
+  approvingExpenseRequests ExpenseRequest[] @relation("ExpenseRequestApprover") // 自分が承認者（上長）である経費申請（PBI4）
 
   // 申請・監査ログ等の業務データが紐づく可能性があるため、Userはハードデリート不可の方針。
   // Userへの参照は基本的に onDelete: Restrict または SetNull とし、安易な連鎖削除を防ぐ。
@@ -176,20 +178,28 @@ model Session {
 // ============================================================
 // PBI3（経費申請の登録・編集）のスコープ：
 //   下書き(DRAFT)の作成・編集・削除、提出(DRAFT/RETURNED→SUBMITTED)のみ。
-// 承認・差し戻し・経理確認（APPROVED/RETURNED/ACCOUNTING_CONFIRMEDへの遷移、
-// 承認者・承認日時・差し戻し理由等）はPBI4・5のスコープのため、
-// 今回は status の値自体（packages/shared の ExpenseStatus）だけ将来分まで
-// 用意し、承認者ID・差し戻し理由等のカラムは追加しない
-// （未使用カラムを先に生やすとマイグレーションの意図が読みにくくなるため、
-// 実際に必要になった時点のPBIで追加する方針。詳細はdocs/api/pbi-3.mdの
-// 「判断に迷ったところ」を参照）。
+// PBI4（承認・差し戻し）で以下を追加：
+//   - approverId：提出(submit)時に申請者のUser.managerIdを保存する「承認者ID」。
+//     承認・差し戻し操作の対象を絞り込むために使う（詳細はdocs/api/pbi-4.md）。
+//   - returnReason：差し戻し時の理由（必須・500文字まで）。
+// 経理確認（確認者・確認日時等）はPBI5のスコープのため、今回は追加しない
+// （詳細はdocs/api/pbi-3.md・docs/api/pbi-4.mdの「判断に迷ったところ」を参照）。
 model ExpenseRequest {
   id String @id @default(uuid()) @db.Uuid
 
   applicantId String @db.Uuid
-  applicant   User   @relation(fields: [applicantId], references: [id], onDelete: Restrict)
+  applicant   User   @relation("ExpenseRequestApplicant", fields: [applicantId], references: [id], onDelete: Restrict)
   // onDelete: Restrict — Userはハードデリートしない方針（User側コメント参照）のため、
   // 実運用では発火しないが、万一の削除経路でも経費申請データを連鎖削除しない。
+
+  // 承認者ID（PBI4で追加）。提出(POST /expenses/:id/submit)時に、その時点の
+  // 申請者のUser.managerIdを保存する。DRAFT段階では未設定のためnullable。
+  // 差し戻し後の再提出でも同じsubmitエンドポイントが使われるため、その時点の
+  // managerIdで上書きされる（特別な分岐は設けない。詳細はdocs/api/pbi-4.md）。
+  // onDelete: Restrict — Userはハードデリートしない方針のため実運用では発火しないが、
+  // 承認者（上長）が消えても承認待ちの申請を連鎖削除しないようにする。
+  approverId String? @db.Uuid
+  approver   User?   @relation("ExpenseRequestApprover", fields: [approverId], references: [id], onDelete: Restrict)
 
   // 利用日（経費が発生した日）。申請操作が行われた日時(createdAt)とは別の概念。
   expenseDate DateTime @db.Date
@@ -211,12 +221,22 @@ model ExpenseRequest {
   // （リクエストボディでは受け取らない。packages/sharedのExpenseStatusを文字列で保存）。
   status String @default("DRAFT")
 
+  // 差し戻し理由（PBI4で追加）。差し戻し(RETURNED)時に必須・500文字まで。
+  // 承認(APPROVED)時や、差し戻し後に再提出(SUBMITTED)された時点では意味を持たない値に
+  // なるが、「前回差し戻された理由」を履歴として消す要件がないため、再提出時にクリアする
+  // 処理は設けない（上書きは次に差し戻された時のみ発生する。詳細は判断に迷ったところ参照）。
+  returnReason String? @db.VarChar(500)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // 一覧取得（GET /expenses）は必ず applicantId = 自分 の条件を付けて検索するため、
-  // applicantIdに単体インデックスを張る。ページネーションのソート順(createdAt降順等)が
-  // 決まった場合は複合インデックス([applicantId, createdAt])への変更を検討する。
-  @@index([applicantId])
+  // 一覧取得（GET /expenses）は必ず applicantId = 自分 の条件を付けて検索し、
+  // createdAt降順でページネーションするため、[applicantId, createdAt]の複合インデックスを
+  // 張る（実装着手時にソート順が確定したため、単体インデックスから複合インデックスに変更）。
+  @@index([applicantId, createdAt])
+  // 承認者視点の一覧取得（GET /approvals）は必ず
+  // approverId = 自分 かつ status = SUBMITTED の条件で検索するため、
+  // [approverId, status]の複合インデックスを張る（PBI4）。
+  @@index([approverId, status])
   @@map("expense_requests")
 }

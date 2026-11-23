@@ -1,10 +1,11 @@
 // 経費申請（ExpenseRequest）関連の定数・型。
-// PBI3（経費申請の登録・編集）で確定した仕様を反映。
+// PBI3（経費申請の登録・編集）・PBI4（承認・差し戻し）で確定した仕様を反映。
 //
 // ステータス遷移（CLAUDE.md参照）：
 //   下書き(DRAFT) → 申請中(SUBMITTED) → 承認済み(APPROVED) ／ 差し戻し(RETURNED) → 経理確認済み(ACCOUNTING_CONFIRMED)
-// PBI3のスコープは DRAFT の作成・編集・削除 と、DRAFT/RETURNED→SUBMITTED の提出のみ。
-// APPROVED/RETURNED/ACCOUNTING_CONFIRMEDへの遷移はPBI4・5のスコープだが、
+// PBI3のスコープは DRAFT の作成・編集・削除 と、DRAFT/RETURNED→SUBMITTED の提出。
+// PBI4のスコープは SUBMITTED→APPROVED（承認） と SUBMITTED→RETURNED（差し戻し）。
+// ACCOUNTING_CONFIRMEDへの遷移はPBI5のスコープだが、
 // CLAUDE.mdのフロー全体を見据えて値自体は先に定義しておく
 // （DBのstatusカラムが後から取り得る値の集合を、今のうちに１箇所で管理する）。
 //
@@ -42,6 +43,25 @@ export const EXPENSE_EDITABLE_STATUSES: ExpenseStatus[] = [ExpenseStatus.DRAFT, 
 export const EXPENSE_DELETABLE_STATUSES: ExpenseStatus[] = [ExpenseStatus.DRAFT];
 
 export const EXPENSE_SUBMITTABLE_STATUSES: ExpenseStatus[] = [ExpenseStatus.DRAFT, ExpenseStatus.RETURNED];
+
+// 承認・差し戻しが許可されているステータスのポジティブリスト（PBI4）。
+// - 承認可能：SUBMITTED のみ
+// - 差し戻し可能：SUBMITTED のみ
+// 受け入れ条件「『申請中』以外の申請を承認・差し戻しすると409」「承認と差し戻しが
+// 同時に来ても、成功するのは片方だけ（もう片方は409）」を、PBI3と同じ「条件付き
+// updateMany（where に status: { in: [...] } を含める）」の形で実現する
+// （どちらも対象をSUBMITTEDのみに絞るため、一方が先にSUBMITTED→APPROVED/RETURNEDに
+// 変更した後に他方のupdateManyを実行すると対象行が0件になり、自然に409になる）。
+export const EXPENSE_APPROVABLE_STATUSES: ExpenseStatus[] = [ExpenseStatus.SUBMITTED];
+
+export const EXPENSE_RETURNABLE_STATUSES: ExpenseStatus[] = [ExpenseStatus.SUBMITTED];
+
+// 承認者（上長）の一覧・閲覧対象となるステータス（受け入れ条件：
+// 「直属の部下の『申請中』の申請だけを一覧・閲覧できる」）。
+export const EXPENSE_APPROVER_VISIBLE_STATUSES: ExpenseStatus[] = [ExpenseStatus.SUBMITTED];
+
+// 差し戻し理由の文字数制約（受け入れ条件：500文字まで）。
+export const EXPENSE_RETURN_REASON_MAX_LENGTH = 500;
 
 // 科目（科目区分）。DBの category カラムにもこの値をそのまま格納する。
 export const ExpenseCategory = {
@@ -81,16 +101,25 @@ export interface ListExpenseRequestsQuery {
 }
 
 // 経費申請1件分のレスポンス型。
-// applicantId は常にログイン中のユーザー自身のIDになる（一覧・詳細ともに
-// 「自分の申請だけ」が返るため）。
+// 申請者視点（GET /expenses, GET /expenses/:id等）・承認者視点
+// （GET /approvals, GET /approvals/:id等。PBI4で追加）の
+// 両方で同じ型を使う（見える列・権限はエンドポイント側のwhere条件で制御するため、
+// レスポンスの形自体は分けない）。
 export interface ExpenseRequestDto {
   id: string;
   applicantId: string;
+  // 承認者ID（PBI4で追加）。SUBMITTEDに遷移した時点でそのときの申請者のmanagerIdが
+  // 保存される。DRAFT段階（一度も提出されていない申請）ではnull。
+  approverId: string | null;
   expenseDate: string; // ISO8601の日付（例: "2026-11-23"）。利用日。
   amount: number; // 円の整数
   category: ExpenseCategory;
   description: string;
   status: ExpenseStatus;
+  // 差し戻し理由（PBI4で追加）。差し戻されたことが一度もない申請はnull。
+  // 差し戻し→再提出後も、次に差し戻されるまでは直前の値が残る
+  // （詳細はdocs/api/pbi-4.mdの「判断に迷ったところ」参照）。
+  returnReason: string | null;
   createdAt: string; // ISO8601
   updatedAt: string; // ISO8601
 }
@@ -115,4 +144,26 @@ export interface UpsertExpenseRequestBody {
   // （例："FOO"）がDBのcategoryカラム（String型）にそのまま保存されてしまうため。
   category: ExpenseCategory;
   description: string;
+}
+
+// ============================================================
+// PBI4（承認・差し戻し）
+// ============================================================
+
+// GET /approvals のクエリパラメータ型（プレーンなTS型）。
+// GET /expenses と同じ考え方で page のみを公開し、pageSize は固定の
+// EXPENSE_LIST_PAGE_SIZE とする（クライアントには公開しない）。
+export interface ListApprovalExpenseRequestsQuery {
+  page?: number;
+}
+
+// GET /approvals のレスポンス型は、既存の ExpenseRequestListResponseDto
+// （GET /expenses と共用）を使う。「直属の部下の『申請中』の申請だけ」が対象のため、
+// items は必ず approverId = 自分 かつ status = SUBMITTED の申請のみになる。
+// total は「自分が承認対象の申請中の申請」の総件数（他の承認者・他ステータスを含まない）。
+
+// POST /approvals/:id/return のリクエストボディ型（プレーンなTS型）。
+// 差し戻しには理由が必須（受け入れ条件：500文字まで）。
+export interface ReturnExpenseRequestBody {
+  reason: string;
 }
