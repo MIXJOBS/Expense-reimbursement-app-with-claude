@@ -20,6 +20,13 @@ export const ErrorCode = {
   NOT_FOUND: 'NOT_FOUND',
   VALIDATION_ERROR: 'VALIDATION_ERROR',
   INTERNAL_ERROR: 'INTERNAL_ERROR', // 500。詳細はクライアントに返さない
+  // IPアドレス単位のログイン試行レート制限（1分間に10回まで、11回目で429）。
+  // 上記コメントの「ロック用の専用コードは設けない」は、メールアドレス単位の
+  // アカウントロックアウト（5回失敗で15分ロック）の話であり、ユーザー列挙対策として
+  // 常にAUTH_INVALID_CREDENTIALSを返す方針を指す。今回のIPアドレス単位のレート制限は、
+  // 特定のメールアドレスの存在/不存在とは無関係（存在しないメールアドレスでも
+  // 同一IPからの呼び出し回数だけで発生する）ため別軸であり、専用コードを設ける。
+  TOO_MANY_REQUESTS: 'TOO_MANY_REQUESTS',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

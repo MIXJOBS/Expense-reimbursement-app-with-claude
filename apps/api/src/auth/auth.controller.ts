@@ -7,8 +7,10 @@ import {
   HttpStatus,
   Req,
   Res,
+  UseGuards,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import type { CurrentUserDto, LoginResponseBody } from '@expense/shared';
 import { Public } from '../common/decorators/public.decorator';
 import { CurrentUser } from './current-user.decorator';
@@ -23,7 +25,14 @@ export class AuthController {
 
   // 公開API（@Public）だが、CSRF対策のOrigin検証（OriginGuard、状態変更系メソッド対象）は
   // 未ログイン状態でも適用される（ログインCSRF攻撃対策）。
+  // IPアドレス単位のレート制限（1分間に10回まで、11回目で429 TOO_MANY_REQUESTS）を
+  // このエンドポイントのみに適用する。ThrottlerGuardはこのメソッドにのみ付けており、
+  // 他のエンドポイント（/auth/logout, /auth/me, /admin/* 等）には一切影響しない。
+  // メールアドレス単位のアカウントロックアウト（5回失敗で15分ロック）とは別軸であり、
+  // そちらのロジック（AuthService.login内）は変更していない。
   @Public()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(

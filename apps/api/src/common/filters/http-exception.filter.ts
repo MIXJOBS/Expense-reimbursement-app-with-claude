@@ -85,6 +85,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
         [HttpStatus.UNAUTHORIZED]: ErrorCode.AUTH_UNAUTHORIZED,
         [HttpStatus.FORBIDDEN]: ErrorCode.FORBIDDEN,
         [HttpStatus.NOT_FOUND]: ErrorCode.NOT_FOUND,
+        // @nestjs/throttlerが投げるThrottlerException（IPアドレス単位の
+        // ログイン試行レート制限）。code未指定のためここでマッピングする。
+        [HttpStatus.TOO_MANY_REQUESTS]: ErrorCode.TOO_MANY_REQUESTS,
       };
 
     return {

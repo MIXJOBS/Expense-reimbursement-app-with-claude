@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "terminal-notifier -title \"Claude Code\" -subtitle \"🏁処理終了！\" -message \"✅タスクが完了しました！\nクリックしてVSCodeを開く\" -activate \"com.microsoft.VSCode\" -sound \"Glass\""
+            "command": "osascript -e 'display notification \"✅タスクが完了しました！\" with title \"Claude Code\" subtitle \"🏁処理終了！\" sound name \"Glass\"'"
           }
         ]
       }
