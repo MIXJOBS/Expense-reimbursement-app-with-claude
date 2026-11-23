@@ -7,7 +7,9 @@
 //   認証フローの仕様確定後に追加する）
 //
 // 以下、PBI1（ログイン・ログアウト）・PBI2（ロールと権限）で確定した設計を反映。
-// ExpenseRequest等の経費申請系テーブルは未定義のため、仕様確定後に追加すること。
+// PBI3（経費申請の登録・編集）で ExpenseRequest を追加。承認・差し戻し（RETURNED）・
+// 経理確認（承認者・承認日時・差し戻し理由等のカラム）はPBI4・5のスコープのため、
+// 現時点では追加しない（詳細は ExpenseRequest モデルのコメント参照）。
 
 generator client {
   provider = "prisma-client-js"
@@ -27,8 +29,8 @@ datasource db {
 //   理由：現在ロック中かどうかの判定にはUser1行のみ見れば済み、
 //   更新も1行のUPDATEで完結するため競合が起きにくい。
 model User {
-  id           String   @id @default(uuid()) @db.Uuid
-  email        String   @unique
+  id           String @id @default(uuid()) @db.Uuid
+  email        String @unique
   passwordHash String // argon2id のハッシュ文字列のみ保存。平文は保持しない。
   name         String
 
@@ -54,9 +56,10 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  roles        UserRole[] @relation("UserRoleToUser")
-  grantedRoles UserRole[] @relation("UserRoleGrantedBy") // 自分が付与したロール付与履歴
-  sessions     Session[]
+  roles           UserRole[]       @relation("UserRoleToUser")
+  grantedRoles    UserRole[]       @relation("UserRoleGrantedBy") // 自分が付与したロール付与履歴
+  sessions        Session[]
+  expenseRequests ExpenseRequest[] // 自分が申請者である経費申請（PBI3）
 
   // 申請・監査ログ等の業務データが紐づく可能性があるため、Userはハードデリート不可の方針。
   // Userへの参照は基本的に onDelete: Restrict または SetNull とし、安易な連鎖削除を防ぐ。
@@ -166,4 +169,54 @@ model Session {
 
   @@index([userId])
   @@map("sessions")
+}
+
+// ============================================================
+// ExpenseRequest（経費申請）
+// ============================================================
+// PBI3（経費申請の登録・編集）のスコープ：
+//   下書き(DRAFT)の作成・編集・削除、提出(DRAFT/RETURNED→SUBMITTED)のみ。
+// 承認・差し戻し・経理確認（APPROVED/RETURNED/ACCOUNTING_CONFIRMEDへの遷移、
+// 承認者・承認日時・差し戻し理由等）はPBI4・5のスコープのため、
+// 今回は status の値自体（packages/shared の ExpenseStatus）だけ将来分まで
+// 用意し、承認者ID・差し戻し理由等のカラムは追加しない
+// （未使用カラムを先に生やすとマイグレーションの意図が読みにくくなるため、
+// 実際に必要になった時点のPBIで追加する方針。詳細はdocs/api/pbi-3.mdの
+// 「判断に迷ったところ」を参照）。
+model ExpenseRequest {
+  id String @id @default(uuid()) @db.Uuid
+
+  applicantId String @db.Uuid
+  applicant   User   @relation(fields: [applicantId], references: [id], onDelete: Restrict)
+  // onDelete: Restrict — Userはハードデリートしない方針（User側コメント参照）のため、
+  // 実運用では発火しないが、万一の削除経路でも経費申請データを連鎖削除しない。
+
+  // 利用日（経費が発生した日）。申請操作が行われた日時(createdAt)とは別の概念。
+  expenseDate DateTime @db.Date
+
+  // 金額は円の整数（CLAUDE.md決定事項）。1〜1,000,000円の範囲チェックはDTOで行うが、
+  // DB制約としても不正値が入らないよう @db.Integer の範囲に収める
+  // （PostgreSQLのInteger範囲で十分なため、桁あふれ対策のCheck制約は設けない）。
+  amount Int
+
+  // 科目区分。packages/shared の ExpenseCategory のいずれかの値を文字列で保存する
+  // （Role.nameと同様の方針。選択肢が増える可能性を考えてEnumカラムではなくStringを
+  // 採用し、packages/shared側の定数で一元管理する）。
+  category String
+
+  // 内容（詳細説明）。200文字までの制約はDTOで検証する。
+  description String @db.VarChar(200)
+
+  // ステータス。DRAFT固定で作成し、専用の提出APIでのみSUBMITTEDに変更する
+  // （リクエストボディでは受け取らない。packages/sharedのExpenseStatusを文字列で保存）。
+  status String @default("DRAFT")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // 一覧取得（GET /expenses）は必ず applicantId = 自分 の条件を付けて検索するため、
+  // applicantIdに単体インデックスを張る。ページネーションのソート順(createdAt降順等)が
+  // 決まった場合は複合インデックス([applicantId, createdAt])への変更を検討する。
+  @@index([applicantId])
+  @@map("expense_requests")
 }

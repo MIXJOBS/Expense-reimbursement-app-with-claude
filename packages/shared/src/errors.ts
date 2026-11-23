@@ -27,6 +27,14 @@ export const ErrorCode = {
   // 特定のメールアドレスの存在/不存在とは無関係（存在しないメールアドレスでも
   // 同一IPからの呼び出し回数だけで発生する）ため別軸であり、専用コードを設ける。
   TOO_MANY_REQUESTS: 'TOO_MANY_REQUESTS',
+
+  // 状態遷移系（PBI3: 経費申請）
+  // 「編集・削除不可」「提出不可」は入力値そのものの誤り（VALIDATION_ERROR）ではなく、
+  // リソースの現在の状態と操作が噛み合わないことが原因のため、409 Conflictとして
+  // 専用コードを分ける（CLAUDE.mdのエラー形式{code, message}の方針に合わせ、
+  // クライアントが「何が原因の409か」をコードで判別できるようにする）。
+  CONFLICT_INVALID_STATUS: 'CONFLICT_INVALID_STATUS', // 申請中・承認済み・経理確認済みの申請を編集／削除しようとした
+  CONFLICT_MANAGER_NOT_SET: 'CONFLICT_MANAGER_NOT_SET', // 上長(managerId)が未設定のユーザーが提出しようとした
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
