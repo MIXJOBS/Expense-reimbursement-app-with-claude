@@ -562,6 +562,28 @@ describe('Approvals (e2e)', () => {
         expect(row?.status).toBe(ExpenseStatus.SUBMITTED);
       });
 
+      it.each([
+        ['spaceのみ', 'return-ws-space', '   '],
+        ['全角スペースのみ', 'return-ws-zenkaku', '　　'],
+        ['改行のみ', 'return-ws-newline', '\n\n'],
+        ['スペース・タブ・改行の混在', 'return-ws-mixed', ' \t\n \r\n\t '],
+      ])(
+        '400 VALIDATION_ERROR: reasonが空白だけ（%s）で、状態は変わらない',
+        async (_label, setupKey, reason) => {
+          const { manager, expense } = await setupSubmitted(setupKey);
+          const res = await returnIt(expense.id, manager.cookieHeader, {
+            reason,
+          });
+          expect(res.status).toBe(400);
+          expect(res.body).toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+          const row = await prisma.expenseRequest.findUnique({
+            where: { id: expense.id },
+          });
+          expect(row?.status).toBe(ExpenseStatus.SUBMITTED);
+          expect(row?.returnReason).toBeNull();
+        },
+      );
+
       it('400 VALIDATION_ERROR: 想定外の項目（status等）を送ると拒否され、状態は変わらない', async () => {
         const { manager, expense } = await setupSubmitted('return-extra');
         const res = await returnIt(expense.id, manager.cookieHeader, {

@@ -185,7 +185,10 @@ export class ExpensesService {
     // 上長が「使えない」状態＝未設定・自分自身を指す・無効化済み(isActive=false)。
     const applicant = await this.prisma.user.findUnique({
       where: { id: applicantId },
-      include: { manager: true },
+      select: {
+        managerId: true,
+        manager: { select: { isActive: true } },
+      },
     });
     if (
       !applicant?.managerId ||
