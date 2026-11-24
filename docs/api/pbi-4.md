@@ -14,8 +14,9 @@ PBI4（承認・差し戻し）で確定したAPI設計のまとめ。
   2. **承認者本人かどうか**（Service）：`MANAGER`ロールを持っていても、対象の申請の`approverId`が自分のユーザーIDと一致しなければ`404 NOT_FOUND`（他人の申請として扱う。PBI3の「他人の申請は404」方針と同じ）。
   - **職務分離（CLAUDE.md大前提）**：申請者本人は、ロールに関係なく自分の申請を承認・差し戻しできない。`managerId`が自分自身を指す等の異常データがあっても確実に弾くため、Serviceの検索条件に`applicantId: { not: 自分のユーザーID }`を明示的に含める（`approverId`の一致だけに依拠しない防御的な実装方針）。
 - 一覧・閲覧（承認者視点）は、`approverId = 自分`かつ`status = SUBMITTED`の申請だけに絞る（受け入れ条件：「直属の部下の『申請中』の申請だけを一覧・閲覧できる。それ以外は404」）。一覧は`findMany`の`where`に、閲覧（詳細）は`findFirst`の`where`に、同じ絞り込み条件（`approverId`・`status`・`applicantId not self`）を含める。
+- **`GET /approvals`はページネーションなし（確定）**：`page`等のクエリパラメータは設けない。代わりにサーバー側で**最大100件**（定数`APPROVAL_LIST_MAX_ITEMS`＝100、`packages/shared`に定義する想定）に`take`で制限する。並び順は申請者視点の`GET /expenses`（PBI3）と同じ`createdAt`降順（新しい順）。レスポンスは`{ items: ExpenseRequestDto[] }`（一覧APIの形をそろえ、将来件数などを足しても壊れないようにするため`items`ラッパーで返す。この段階では`total`・`page`・`pageSize`は返さない）。101件目以降は取得できない（上限超過を知らせる項目も設けない）。想定規模（社員10〜50人、1人の上長が持つ「申請中」の件数）では上限に達しない前提で、大量取得によるDoS対策としての安全弁とする。
 - 承認・差し戻しの状態変更は、PBI3の`update`/`remove`/`submit`と同じ「条件付き`updateMany`」方式。`where`に`status: { in: EXPENSE_APPROVABLE_STATUSES }`（または`EXPENSE_RETURNABLE_STATUSES`。いずれも`[SUBMITTED]`のみ）を含め、影響行数が0件なら`409 CONFLICT_INVALID_STATUS`（既存コードを再利用）。これにより「承認と差し戻しが同時に来ても、成功するのは片方だけ」が自然に実現される（先に成功した側がステータスを`SUBMITTED`から変えるため、後から来た側の`updateMany`は対象0件になる）。
-- 差し戻し時のリクエストボディに理由（必須・500文字まで、`EXPENSE_RETURN_REASON_MAX_LENGTH`）を持たせ、`ExpenseRequest.returnReason`に保存する。承認時にはリクエストボディ自体を設けない（送るべき項目がないため）。
+- 差し戻し時のリクエストボディに理由（必須・500文字まで、`EXPENSE_RETURN_REASON_MAX_LENGTH`）を持たせ、`ExpenseRequest.returnReason`に保存する。承認時にはリクエストボディ自体を設けない（送るべき項目がないため）。`returnReason`は再提出・承認では消さず（nullに戻す処理は設けない）、次の差し戻しで上書きされる。
 - 差し戻された申請は、申請者が編集して再提出できる（PBI3で実装済みの`PUT /expenses/:id`・`POST /expenses/:id/submit`がそのまま使える。`EXPENSE_EDITABLE_STATUSES`・`EXPENSE_SUBMITTABLE_STATUSES`に既に`RETURNED`が含まれているため、PBI3側の変更は不要）。
 - **生SQL（`$executeRaw`／`$queryRaw`）を使う際の必須ルール**：値を埋め込む際は必ず`Prisma.sql`のタグ付きテンプレートリテラル経由で渡すこと。テンプレート文字列での直接埋め込みや`+`による文字列結合で値を埋め込むことは絶対にしない（SQLインジェクション対策。詳細は「提出エンドポイント（PBI3）の挙動変更」および「判断に迷ったところ」参照）。
 
@@ -23,7 +24,7 @@ PBI4（承認・差し戻し）で確定したAPI設計のまとめ。
 
 | メソッド・パス | 必要なロール | 正常時ステータス | 異常時ステータス・エラーコード | 対応する受け入れ条件 |
 | --- | --- | --- | --- | --- |
-| `GET /approvals` | `MANAGER` | 200 | 401 `AUTH_UNAUTHORIZED`／403 `FORBIDDEN`（`MANAGER`ロールなし） | 承認者は、直属の部下の「申請中」の申請だけを一覧できる |
+| `GET /approvals` | `MANAGER` | 200 | 401 `AUTH_UNAUTHORIZED`／403 `FORBIDDEN`（`MANAGER`ロールなし） | 承認者は、直属の部下の「申請中」の申請だけを一覧できる（レスポンスは`{ items: ExpenseRequestDto[] }`・ページネーションなし・`createdAt`降順で最大100件） |
 | `GET /approvals/:id` | `MANAGER` | 200 | 401 `AUTH_UNAUTHORIZED`／403 `FORBIDDEN`（`MANAGER`ロールなし）／404 `NOT_FOUND`（存在しない・自分が承認者でない・自分自身の申請・`SUBMITTED`以外） | 承認者は、直属の部下の「申請中」の申請だけを閲覧できる。それ以外は404 |
 | `POST /approvals/:id/approve` | `MANAGER` | 200 | 401 `AUTH_UNAUTHORIZED`／403 `FORBIDDEN`（CSRF対策。または`MANAGER`ロールなし）／404 `NOT_FOUND`（存在しない・自分が承認者でない・自分自身の申請）／409 `CONFLICT_INVALID_STATUS`（`EXPENSE_APPROVABLE_STATUSES`=`SUBMITTED`以外。差し戻しと同時実行で片方が先に成立した場合を含む） | 承認すると「承認済み」になる／申請者本人は自分の申請を承認できない／「申請中」以外を承認すると409／承認と差し戻しの同時実行は片方のみ成功 |
 | `POST /approvals/:id/return` | `MANAGER` | 200 | 401 `AUTH_UNAUTHORIZED`／403 `FORBIDDEN`（CSRF対策。または`MANAGER`ロールなし）／404 `NOT_FOUND`（存在しない・自分が承認者でない・自分自身の申請）／400 `VALIDATION_ERROR`（`reason`未指定・501文字以上・想定外プロパティ）／409 `CONFLICT_INVALID_STATUS`（`EXPENSE_RETURNABLE_STATUSES`=`SUBMITTED`以外。承認と同時実行で片方が先に成立した場合を含む） | 差し戻すと「差し戻し」になる／差し戻しには理由（500文字まで）が必須／申請者本人は自分の申請を差し戻せない／「申請中」以外を差し戻すと409／承認と差し戻しの同時実行は片方のみ成功 |
@@ -33,7 +34,7 @@ PBI4（承認・差し戻し）で確定したAPI設計のまとめ。
 `POST /expenses/:id/submit`（`docs/api/pbi-3.md`で設計済み・実装済み）自体のURL・ロール・レスポンス形式は変更しない。ただし、`SUBMITTED`への遷移時の内部動作を以下のように変更する必要がある（**今回は設計のみで、`apps/api/src/expenses/expenses.service.ts`の実装は変更しない**）。
 
 - **現状（PBI3実装）**：`submit`は「ステータス確認→上長(`managerId`)確認（別SELECT）→条件付き`updateMany`（`status`のみ更新）」という2段階方式。上長確認のSELECTと実際のUPDATEが分離しているため、理論上その間に`managerId`が変わる余地がある（直前のセキュリティレビュー指摘）。
-- **変更後**：「ステータスがDRAFT/RETURNEDであること」の確認に加えて、「申請者のmanagerIdがNULLではないこと」と「承認者IDの代入」を**同一UPDATE文の中で1回で行う**。Prismaの標準API（`updateMany`の`data`）では他テーブル（`User`）の現在値を参照して書き込む相関更新ができないため、PostgreSQLの`UPDATE ... FROM ... WHERE ...`形式の生SQL（`$executeRaw`。`apps/api/src/admin/roles.service.ts`の`$queryRaw`パターンと同様にPrisma.sqlを使う）を利用する。
+- **変更後**：「ステータスがDRAFT/RETURNEDであること」の確認に加えて、「申請者のmanagerIdがNULLではなく、自分自身でもなく、かつその上長が有効（`isActive = true`）であること」と「承認者IDの代入」を**同一UPDATE文の中で1回で行う**（判定と更新を原子的に行い、判定後に上長が無効化されるレースを防ぐ）。Prismaの標準API（`updateMany`の`data`）では他テーブル（`User`）の現在値を参照して書き込む相関更新ができないため、PostgreSQLの`UPDATE ... FROM ... WHERE ...`形式の生SQL（`$executeRaw`。`apps/api/src/admin/roles.service.ts`の`$queryRaw`パターンと同様にPrisma.sqlを使う）を利用する。
 
   **生SQLを書く際の必須ルール（実装時に厳守すること）**：`$executeRaw`に値を渡す際は、必ず`Prisma.sql`のタグ付きテンプレートリテラル（またはPrismaが提供するパラメータ化APIである`$executeRaw`のテンプレートリテラル構文）経由で渡すこと。テンプレート文字列での直接埋め込み（例：`` `... = '${id}'` ``）や`+`による文字列結合で値をSQL文に埋め込むことは**絶対にしない**。これはSQLインジェクションを防ぐための必須ルールであり、本PBIで生SQLを書く箇所（本セクションの`submit`のUPDATE文）に例外なく適用する。
 
@@ -41,21 +42,23 @@ PBI4（承認・差し戻し）で確定したAPI設計のまとめ。
 
   ```sql
   UPDATE expense_requests er
-  SET status = 'SUBMITTED', approver_id = u."managerId", "updatedAt" = now()
-  FROM users u
+  SET status = 'SUBMITTED', approver_id = m.id, "updatedAt" = now()
+  FROM users u, users m
   WHERE u.id = er."applicantId"
+    AND m.id = u."managerId"
     AND er.id = :id
     AND er."applicantId" = :applicantId
     AND er.status IN ('DRAFT', 'RETURNED')
-    AND u."managerId" IS NOT NULL
-    AND u."managerId" != u.id
+    AND m.id != u.id
+    AND m."isActive" = true
   ```
 
   （`:id`・`:applicantId`は実装時に`Prisma.sql`のテンプレートリテラルでバインドするパラメータを表すプレースホルダであり、文字列結合で埋め込む値ではない。）
 
-  - **自己参照チェック（`u."managerId" != u.id`）の追加**：申請者の`managerId`が申請者自身を指している（上長が自分自身という自己参照データ）場合、そもそも`approverId`としてそのIDを保存しない。これにより、提出の時点で自己参照データを検知してブロックするのが1段目の防御、承認・差し戻し時にServiceの`where`で`applicantId: { not: 自分 }`を明示的に除外するのが2段目の防御となる（二重の守り）。
-  - この単一UPDATEの影響行数が0件のとき、「ステータス不正（409 `CONFLICT_INVALID_STATUS`）」と「上長未設定（409 `CONFLICT_MANAGER_NOT_SET`）」のどちらを報告すべきかを区別する必要がある。PBI3と同じ2段階方式（事前の読み取り専用チェックでどちらの409かを決め、実際の状態変更は上記の単一UPDATEの結果を最終的な正とする）を維持する。事前チェックと実更新の間に競合が生じても、実更新のWHERE条件（ステータス・申請者ID・上長NOT NULL・上長が自分自身でないことを全て含む）がデータ整合性を保証するため安全。
-  - **`managerId`が自分自身を指すユーザーが提出しようとした場合の扱い**：`managerId IS NOT NULL`ではあるが自己参照（`managerId = 自分のid`）であるため、上記UPDATEは0件になる。これは意味合いとしては「上長が実質的に未設定（使える上長がいない）」に近いため、新しいエラーコードは設けず、既存の`409 CONFLICT_MANAGER_NOT_SET`として扱う。事前の読み取り専用チェック（上長未設定かどうかの判定）も、`managerId IS NULL`に加えて`managerId = 自分のid`の場合を同じく「上長未設定」として判定する必要がある。
+  - **自己参照チェック（`m.id != u.id`）の追加**：申請者の`managerId`が申請者自身を指している（上長が自分自身という自己参照データ）場合、そもそも`approverId`としてそのIDを保存しない。これにより、提出の時点で自己参照データを検知してブロックするのが1段目の防御、承認・差し戻し時にServiceの`where`で`applicantId: { not: 自分 }`を明示的に除外するのが2段目の防御となる（二重の守り）。
+  - **上長が無効（`isActive = false`）の場合（確定）**：申請者の上長（`managerId`の指す先）が`isActive = false`（退職者無効化済み等）のユーザーなら、提出は`409 CONFLICT_MANAGER_NOT_SET`を返す（新しいエラーコードは設けない。「使える上長がいない」という意味で上長未設定と同列に扱う）。この判定は上記の単一UPDATEのWHERE（`m."isActive" = true`）に含める。事前の読み取り専用チェックだけで判定すると、チェックとUPDATEの間に上長が無効化された場合に無効な上長が`approverId`に保存されてしまうため、判定と更新を同一SQLで原子的に行う。
+  - この単一UPDATEの影響行数が0件のとき、「ステータス不正（409 `CONFLICT_INVALID_STATUS`）」と「上長未設定（409 `CONFLICT_MANAGER_NOT_SET`）」のどちらを報告すべきかを区別する必要がある。PBI3と同じ2段階方式（事前の読み取り専用チェックでどちらの409かを決め、実際の状態変更は上記の単一UPDATEの結果を最終的な正とする）を維持する。事前チェックと実更新の間に競合が生じても、実更新のWHERE条件（ステータス・申請者ID・上長が存在する・上長が自分自身でない・上長が有効を全て含む）がデータ整合性を保証するため安全（競合時はUPDATEが0件になり、事前チェックの結果に応じた409を返す。無効な上長が`approverId`に保存されることはない）。
+  - **`managerId`が自分自身を指すユーザーが提出しようとした場合の扱い**：`managerId IS NOT NULL`ではあるが自己参照（`managerId = 自分のid`）であるため、上記UPDATEは0件になる。これは意味合いとしては「上長が実質的に未設定（使える上長がいない）」に近いため、新しいエラーコードは設けず、既存の`409 CONFLICT_MANAGER_NOT_SET`として扱う。事前の読み取り専用チェック（上長未設定かどうかの判定）も、`managerId IS NULL`に加えて`managerId = 自分のid`の場合・上長が`isActive = false`の場合を同じく「上長未設定」として判定する必要がある。
   - 差し戻し(`RETURNED`)から再提出したときも同じSQLが走るため、その時点の`managerId`で`approverId`が自然に上書きされる（特別な分岐は不要）。
 
 ## 補足
@@ -68,7 +71,7 @@ PBI4（承認・差し戻し）で確定したAPI設計のまとめ。
   1. `approverId`・`applicantId not self`のみの条件で存在確認 → 無ければ404。
   2. `status: { in: EXPENSE_APPROVABLE_STATUSES（またはEXPENSE_RETURNABLE_STATUSES）}`も条件に加えた条件付き`updateMany`を実行。件数が0件なら409 `CONFLICT_INVALID_STATUS`。
   - `return`の`updateMany`の`data`には`status: RETURNED`と`returnReason`を同時にセットする（単一のUPDATE文で完結させる。理由の保存だけ別クエリにすると、ステータスだけ変わって理由が保存されない中間状態が生まれ得るため）。
-- 一覧・閲覧（承認者視点）のレスポンス型は、申請者視点（`GET /expenses`・`GET /expenses/:id`）と同じ`ExpenseRequestDto`を使う（`packages/shared/src/expenses.ts`）。権限の違いはURL・Service層の`where`条件で制御し、レスポンスの形自体は分けない。
+- 一覧・閲覧（承認者視点）のレスポンスの要素型は、申請者視点（`GET /expenses`・`GET /expenses/:id`）と同じ`ExpenseRequestDto`を使う（`GET /approvals`は`{ items: ExpenseRequestDto[] }`、`GET /approvals/:id`は`ExpenseRequestDto`単体）（`packages/shared/src/expenses.ts`）。権限の違いはURL・Service層の`where`条件で制御し、レスポンスの形自体は分けない。
 - 監査ログ（誰が・いつ・何に・何をしたか）の記録自体はSprint3（PBI6）のスコープ。本PBIでも、承認・差し戻しをそれぞれ独立した1操作1メソッド（`approve`・`return`）として実装する方針とする（PBI3と同じ指針）。
 
 ## マイグレーション
@@ -81,5 +84,5 @@ PBI4（承認・差し戻し）で確定したAPI設計のまとめ。
 2. **ロール不足時のステータスコード（403 FORBIDDEN）と、承認者本人でない場合のステータスコード（404 NOT_FOUND）の使い分け**：CLAUDE.mdの横断ルール1「ロールはGuard、本人かどうかはServiceで判定する」を素直に適用すると、`MANAGER`ロールを持たない人は403、`MANAGER`を持つが担当外（または自分自身の申請）の人は404、という2段構えになる。これはPBI1/2の既存`RoleGuard`の使い方（例：`ADMIN`ロールがないと`/admin/*`は403）と一貫するが、「ロールを持っているかどうかで403/404が変わる」ことが情報漏洩（MANAGERロールの有無が分かる）にならないか迷った。結論としては、`MANAGER`ロールの有無自体は機密情報ではなく（人事上誰が上長かは社内で公知）、CLAUDE.mdの横断ルールにも明確に反するため、素直にGuardで403・Serviceで404とする方針にした。レビューで異議があれば要相談。
 3. **`approverId`設定の生SQL化**：PO指示の通り、Prismaの標準APIでは「他テーブル（User）の現在値を参照して書き込む」相関更新ができないため、`$executeRaw`（`Prisma.sql`）を使う設計とした。`apps/api/src/admin/roles.service.ts`の悲観ロック用`$queryRaw`と同様、生SQLを使う箇所はコメントで「なぜPrismaの標準APIで表現できないか」を明記する方針にする。実装フェーズでは、SQLインジェクション対策として必ず`Prisma.sql`のテンプレートリテラル経由でパラメータを埋め込み、文字列結合はしないこと。
 4. **承認日時・承認者の履歴等、受け入れ条件に無いカラムの扱い**：PO指示により、今回は追加しない（`approverId`・`returnReason`のみ追加）。`approvedAt`（承認日時）・`returnedAt`（差し戻し日時）等は、受け入れ条件に「いつ承認されたか」を画面に出す要件が明記されていないため見送った。ただし`updatedAt`（既存カラム）が承認・差し戻しが起きた時刻を実質的に表すため、最低限の時系列情報は失われない。将来「承認日時を一覧に出したい」等の要件が出た場合はカラム追加で対応する。
-5. **`returnReason`を再提出・承認時にクリアするか**：差し戻し理由は「次に差し戻されるまで直前の値が残る」設計にした（再提出・承認時に明示的にnullへクリアする処理は設けない）。受け入れ条件に「理由を消す」要件がなく、「直前に差し戻された理由が何だったか」を履歴的に参照できた方が監査上望ましいと判断したため。ただし、承認済み(`APPROVED`)の申請に古い`returnReason`が残り続けることが画面表示上誤解を招く場合（例：承認済みなのに差し戻し理由が表示される）、フロント（`apps/web`）側で`status`に応じて非表示にする対応が必要になる可能性がある。
+5. **`returnReason`を再提出・承認時にクリアするか（確定）**：再提出・承認では`returnReason`を消さず、次の差し戻しで上書きされる。差し戻し理由は「次に差し戻されるまで直前の値が残る」設計にした（再提出・承認時に明示的にnullへクリアする処理は設けない）。受け入れ条件に「理由を消す」要件がなく、「直前に差し戻された理由が何だったか」を履歴的に参照できた方が監査上望ましいと判断したため。ただし、承認済み(`APPROVED`)の申請に古い`returnReason`が残り続けることが画面表示上誤解を招く場合（例：承認済みなのに差し戻し理由が表示される）、フロント（`apps/web`）側で`status`に応じて非表示にする対応が必要になる可能性がある。
 6. **`ExpenseRequest.approver`リレーションの`onDelete`**：`applicant`と同じ`Restrict`にした（Userはハードデリートしない方針のため実運用では発火しないが、万一の削除経路でも承認待ちの申請を連鎖削除しないため）。`managerId`（User自己参照）が`SetNull`であることとは意図的に非対称にしている：`managerId`は「現在の上長が誰か」という設定値なのでNULL化してよいが、`approverId`は「提出時点でのスナップショット」であり、後から上長が変わっても過去の申請の承認責任の記録を保持する必要があると考えたため。
