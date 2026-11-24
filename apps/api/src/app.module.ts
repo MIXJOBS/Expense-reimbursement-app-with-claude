@@ -9,6 +9,7 @@ import { CommonModule } from './common/common.module';
 import { AuthModule } from './auth/auth.module';
 import { AdminModule } from './admin/admin.module';
 import { ExpensesModule } from './expenses/expenses.module';
+import { ApprovalsModule } from './approvals/approvals.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { ExpensesModule } from './expenses/expenses.module';
     AuthModule,
     AdminModule,
     ExpensesModule,
+    ApprovalsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

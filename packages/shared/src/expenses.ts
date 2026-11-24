@@ -150,17 +150,16 @@ export interface UpsertExpenseRequestBody {
 // PBI4（承認・差し戻し）
 // ============================================================
 
-// GET /approvals のクエリパラメータ型（プレーンなTS型）。
-// GET /expenses と同じ考え方で page のみを公開し、pageSize は固定の
-// EXPENSE_LIST_PAGE_SIZE とする（クライアントには公開しない）。
-export interface ListApprovalExpenseRequestsQuery {
-  page?: number;
-}
+// GET /approvals はページネーションなし（docs/api/pbi-4.md 確定事項）。
+// 大量取得によるDoS対策として、サーバー側で createdAt 降順の先頭から最大この件数に
+// take で制限する（上限超過を知らせる項目は設けない）。
+// レスポンスは { items: ExpenseRequestDto[] }（ApprovalListResponseDto）。total等は返さない。
+export const APPROVAL_LIST_MAX_ITEMS = 100;
 
-// GET /approvals のレスポンス型は、既存の ExpenseRequestListResponseDto
-// （GET /expenses と共用）を使う。「直属の部下の『申請中』の申請だけ」が対象のため、
-// items は必ず approverId = 自分 かつ status = SUBMITTED の申請のみになる。
-// total は「自分が承認対象の申請中の申請」の総件数（他の承認者・他ステータスを含まない）。
+// GET /approvals のレスポンス型。ページネーションなしのため total・page・pageSize は持たない。
+export interface ApprovalListResponseDto {
+  items: ExpenseRequestDto[];
+}
 
 // POST /approvals/:id/return のリクエストボディ型（プレーンなTS型）。
 // 差し戻しには理由が必須（受け入れ条件：500文字まで）。

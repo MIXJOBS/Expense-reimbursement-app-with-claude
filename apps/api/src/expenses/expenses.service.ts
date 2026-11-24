@@ -3,7 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { ExpenseRequest } from '@prisma/client';
+import { ExpenseRequest, Prisma } from '@prisma/client';
 import {
   ErrorCode,
   ExpenseStatus,
@@ -181,24 +181,56 @@ export class ExpensesService {
       throw this.conflictInvalidStatus();
     }
 
+    // 事前チェック（どの409を返すかの判定用。最終的な正は下の単一UPDATEのWHERE）。
+    // 上長が「使えない」状態＝未設定・自分自身を指す・無効化済み(isActive=false)。
     const applicant = await this.prisma.user.findUnique({
       where: { id: applicantId },
+      select: {
+        managerId: true,
+        manager: { select: { isActive: true } },
+      },
     });
-    if (!applicant?.managerId) {
+    if (
+      !applicant?.managerId ||
+      applicant.managerId === applicantId ||
+      !applicant.manager?.isActive
+    ) {
       throw this.conflictManagerNotSet();
     }
 
-    const result = await this.prisma.expenseRequest.updateMany({
-      where: {
-        id,
-        applicantId,
-        status: { in: EXPENSE_SUBMITTABLE_STATUSES },
-      },
-      data: { status: ExpenseStatus.SUBMITTED },
-    });
+    // Prismaの標準API（updateMany）では他テーブル(users)の現在値を参照して書き込む
+    // 相関更新ができないため、UPDATE ... FROM の生SQLを使う。
+    // ステータス・上長の有効性の判定と approverId の代入を1文で原子的に行う
+    // （判定後に上長が無効化されるレースを防ぐ）。
+    // 値は必ず Prisma.sql のテンプレートリテラルでバインドする（文字列結合はしない）。
+    const submittableStatuses = Prisma.join(EXPENSE_SUBMITTABLE_STATUSES);
+    const count = await this.prisma.$executeRaw(Prisma.sql`
+      UPDATE "expense_requests" er
+      SET "status" = ${ExpenseStatus.SUBMITTED},
+          "approverId" = m."id",
+          "updatedAt" = now()
+      FROM "users" u, "users" m
+      WHERE u."id" = er."applicantId"
+        AND m."id" = u."managerId"
+        AND er."id" = ${id}::uuid
+        AND er."applicantId" = ${applicantId}::uuid
+        AND er."status" IN (${submittableStatuses})
+        AND m."id" <> u."id"
+        AND m."isActive" = true
+    `);
 
-    if (result.count === 0) {
-      throw this.conflictInvalidStatus();
+    if (count === 0) {
+      // ステータス競合か上長の競合かを再確認して、対応する409を返す。
+      const current = await this.prisma.expenseRequest.findFirst({
+        where: { id, applicantId },
+      });
+      if (
+        !current ||
+        !EXPENSE_SUBMITTABLE_STATUSES.includes(current.status as ExpenseStatus)
+      ) {
+        throw this.conflictInvalidStatus();
+      }
+      throw this.conflictManagerNotSet();
     }
 
     const updated = await this.prisma.expenseRequest.findFirst({
@@ -214,11 +246,13 @@ export class ExpensesService {
     return {
       id: expense.id,
       applicantId: expense.applicantId,
+      approverId: expense.approverId,
       expenseDate: expense.expenseDate.toISOString().slice(0, 10),
       amount: expense.amount,
       category: expense.category as ExpenseRequestDto['category'],
       description: expense.description,
       status: expense.status as ExpenseStatus,
+      returnReason: expense.returnReason,
       createdAt: expense.createdAt.toISOString(),
       updatedAt: expense.updatedAt.toISOString(),
     };
