@@ -5,3 +5,6 @@ dist/
 !.env.example
 .claude/settings.local.json
 .vscode/
+
+# エージェントの作業報告（POが直接読む。コミットしない）
+.reports/
