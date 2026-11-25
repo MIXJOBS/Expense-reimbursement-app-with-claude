@@ -93,8 +93,8 @@ model Role {
 // UserRole（User と Role の中間テーブル）
 // ============================================================
 // - 誰が・いつ付与したかを残す（監査ログ本体はSprint3だが、最低限の
-//   付与者・付与日時はここに持たせておくことで、監査ログInterceptor側で
-//   変更前後の値を組み立てやすくする）
+//   付与者・付与日時はここに持たせておく。ロール変更の監査ログ（変更前後の値）は
+//   RolesService が AuditLogService で同一トランザクション内に記録する）
 model UserRole {
   id String @id @default(uuid()) @db.Uuid
 

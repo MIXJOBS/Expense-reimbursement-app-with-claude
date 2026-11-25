@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
 import { Injectable } from '@nestjs/common';
-import { Session, User } from '@prisma/client';
+import { Prisma, Session, User } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 // セッション固定対策・絶対期限/スライディング期限を踏まえたセッション管理の共通ロジック。
@@ -42,10 +42,12 @@ export class SessionsService {
   async createSession(
     userId: string,
     meta?: { userAgent?: string | null; ipAddress?: string | null },
+    // 監査ログと同じトランザクションで作る場合に tx を渡す（PBI6）。
+    client: Prisma.TransactionClient = this.prisma,
   ): Promise<CreatedSession> {
     const rawToken = this.generateRawToken();
     const now = new Date();
-    const session = await this.prisma.session.create({
+    const session = await client.session.create({
       data: {
         tokenHash: this.hashToken(rawToken),
         userId,
@@ -58,11 +60,19 @@ export class SessionsService {
     return { rawToken, session };
   }
 
-  async revokeSession(sessionId: string): Promise<void> {
-    await this.prisma.session.updateMany({
+  /**
+   * セッションを失効させる。実際に失効させた（今回revokedAtを入れた）ときだけ true。
+   * 監査ログと同じトランザクションで行う場合に tx を渡す（PBI6）。
+   */
+  async revokeSession(
+    sessionId: string,
+    client: Prisma.TransactionClient = this.prisma,
+  ): Promise<boolean> {
+    const result = await client.session.updateMany({
       where: { id: sessionId, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+    return result.count === 1;
   }
 
   async revokeByTokenHash(tokenHash: string): Promise<void> {

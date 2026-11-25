@@ -5,6 +5,9 @@ import {
 } from '@nestjs/common';
 import { ExpenseRequest, Prisma } from '@prisma/client';
 import {
+  AuditAction,
+  AuditResult,
+  AuditTargetType,
   ErrorCode,
   ExpenseStatus,
   EXPENSE_DELETABLE_STATUSES,
@@ -16,10 +19,14 @@ import {
   type UpsertExpenseRequestBody,
 } from '@expense/shared';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuditLogService } from '../audit/audit-log.service';
 
 @Injectable()
 export class ExpensesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly auditLog: AuditLogService,
+  ) {}
 
   /**
    * 下書き(DRAFT)の新規作成。status・applicantIdはサーバーが決める値
@@ -28,16 +35,31 @@ export class ExpensesService {
   async create(
     applicantId: string,
     body: UpsertExpenseRequestBody,
+    ipAddress: string | null,
   ): Promise<ExpenseRequestDto> {
-    const expense = await this.prisma.expenseRequest.create({
-      data: {
-        applicantId,
-        expenseDate: new Date(body.expenseDate),
-        amount: body.amount,
-        category: body.category,
-        description: body.description,
-        status: ExpenseStatus.DRAFT,
-      },
+    // 作成と監査ログを同一トランザクションで行う（記録に失敗したら作成も取り消される）。
+    const expense = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.expenseRequest.create({
+        data: {
+          applicantId,
+          expenseDate: new Date(body.expenseDate),
+          amount: body.amount,
+          category: body.category,
+          description: body.description,
+          status: ExpenseStatus.DRAFT,
+        },
+      });
+      await this.auditLog.record(tx, {
+        actorUserId: applicantId,
+        action: AuditAction.EXPENSE_CREATE,
+        result: AuditResult.SUCCESS,
+        targetType: AuditTargetType.EXPENSE_REQUEST,
+        targetId: created.id,
+        before: null,
+        after: this.auditLog.expenseSnapshot(created),
+        ipAddress,
+      });
+      return created;
     });
     return this.toDto(expense);
   }
@@ -95,38 +117,52 @@ export class ExpensesService {
     applicantId: string,
     id: string,
     body: UpsertExpenseRequestBody,
+    ipAddress: string | null,
   ): Promise<ExpenseRequestDto> {
-    const existing = await this.prisma.expenseRequest.findFirst({
-      where: { id, applicantId },
-    });
-    if (!existing) {
-      throw this.notFound();
-    }
+    const updated = await this.prisma.$transaction(async (tx) => {
+      // 行ロックを取って読む（監査ログのbefore/afterを正確にするため。docs/api/pbi-6.md）。
+      const existing = await this.lockOwned(tx, applicantId, id);
+      if (!existing) {
+        throw this.notFound();
+      }
 
-    const result = await this.prisma.expenseRequest.updateMany({
-      where: {
-        id,
-        applicantId,
-        status: { in: EXPENSE_EDITABLE_STATUSES },
-      },
-      data: {
-        expenseDate: new Date(body.expenseDate),
-        amount: body.amount,
-        category: body.category,
-        description: body.description,
-      },
-    });
+      const result = await tx.expenseRequest.updateMany({
+        where: {
+          id,
+          applicantId,
+          status: { in: EXPENSE_EDITABLE_STATUSES },
+        },
+        data: {
+          expenseDate: new Date(body.expenseDate),
+          amount: body.amount,
+          category: body.category,
+          description: body.description,
+        },
+      });
 
-    if (result.count === 0) {
-      throw this.conflictInvalidStatus();
-    }
+      if (result.count === 0) {
+        throw this.conflictInvalidStatus();
+      }
 
-    const updated = await this.prisma.expenseRequest.findFirst({
-      where: { id, applicantId },
+      const after = await tx.expenseRequest.findFirst({
+        where: { id, applicantId },
+      });
+      if (!after) {
+        throw this.notFound();
+      }
+
+      await this.auditLog.record(tx, {
+        actorUserId: applicantId,
+        action: AuditAction.EXPENSE_UPDATE,
+        result: AuditResult.SUCCESS,
+        targetType: AuditTargetType.EXPENSE_REQUEST,
+        targetId: id,
+        before: this.auditLog.expenseSnapshot(existing),
+        after: this.auditLog.expenseSnapshot(after),
+        ipAddress,
+      });
+      return after;
     });
-    if (!updated) {
-      throw this.notFound();
-    }
     return this.toDto(updated);
   }
 
@@ -134,25 +170,40 @@ export class ExpensesService {
    * 削除（DELETE /expenses/:id）。許可ステータス: DRAFTのみ。
    * 編集と同じ2段階方式。
    */
-  async remove(applicantId: string, id: string): Promise<void> {
-    const existing = await this.prisma.expenseRequest.findFirst({
-      where: { id, applicantId },
-    });
-    if (!existing) {
-      throw this.notFound();
-    }
+  async remove(
+    applicantId: string,
+    id: string,
+    ipAddress: string | null,
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const existing = await this.lockOwned(tx, applicantId, id);
+      if (!existing) {
+        throw this.notFound();
+      }
 
-    const result = await this.prisma.expenseRequest.deleteMany({
-      where: {
-        id,
-        applicantId,
-        status: { in: EXPENSE_DELETABLE_STATUSES },
-      },
-    });
+      const result = await tx.expenseRequest.deleteMany({
+        where: {
+          id,
+          applicantId,
+          status: { in: EXPENSE_DELETABLE_STATUSES },
+        },
+      });
 
-    if (result.count === 0) {
-      throw this.conflictInvalidStatus();
-    }
+      if (result.count === 0) {
+        throw this.conflictInvalidStatus();
+      }
+
+      await this.auditLog.record(tx, {
+        actorUserId: applicantId,
+        action: AuditAction.EXPENSE_DELETE,
+        result: AuditResult.SUCCESS,
+        targetType: AuditTargetType.EXPENSE_REQUEST,
+        targetId: id,
+        before: this.auditLog.expenseSnapshot(existing),
+        after: null,
+        ipAddress,
+      });
+    });
   }
 
   /**
@@ -167,44 +218,47 @@ export class ExpensesService {
    * 4. 条件付きupdateMany（status: { in: EXPENSE_SUBMITTABLE_STATUSES }も条件に含める）
    *    を実行し、countが0なら409 CONFLICT_INVALID_STATUS（TOCTOU対策、最終判定）。
    */
-  async submit(applicantId: string, id: string): Promise<ExpenseRequestDto> {
-    const existing = await this.prisma.expenseRequest.findFirst({
-      where: { id, applicantId },
-    });
-    if (!existing) {
-      throw this.notFound();
-    }
+  async submit(
+    applicantId: string,
+    id: string,
+    ipAddress: string | null,
+  ): Promise<ExpenseRequestDto> {
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const existing = await this.lockOwned(tx, applicantId, id);
+      if (!existing) {
+        throw this.notFound();
+      }
 
-    if (
-      !EXPENSE_SUBMITTABLE_STATUSES.includes(existing.status as ExpenseStatus)
-    ) {
-      throw this.conflictInvalidStatus();
-    }
+      if (
+        !EXPENSE_SUBMITTABLE_STATUSES.includes(existing.status as ExpenseStatus)
+      ) {
+        throw this.conflictInvalidStatus();
+      }
 
-    // 事前チェック（どの409を返すかの判定用。最終的な正は下の単一UPDATEのWHERE）。
-    // 上長が「使えない」状態＝未設定・自分自身を指す・無効化済み(isActive=false)。
-    const applicant = await this.prisma.user.findUnique({
-      where: { id: applicantId },
-      select: {
-        managerId: true,
-        manager: { select: { isActive: true } },
-      },
-    });
-    if (
-      !applicant?.managerId ||
-      applicant.managerId === applicantId ||
-      !applicant.manager?.isActive
-    ) {
-      throw this.conflictManagerNotSet();
-    }
+      // 事前チェック（どの409を返すかの判定用。最終的な正は下の単一UPDATEのWHERE）。
+      // 上長が「使えない」状態＝未設定・自分自身を指す・無効化済み(isActive=false)。
+      const applicant = await tx.user.findUnique({
+        where: { id: applicantId },
+        select: {
+          managerId: true,
+          manager: { select: { isActive: true } },
+        },
+      });
+      if (
+        !applicant?.managerId ||
+        applicant.managerId === applicantId ||
+        !applicant.manager?.isActive
+      ) {
+        throw this.conflictManagerNotSet();
+      }
 
-    // Prismaの標準API（updateMany）では他テーブル(users)の現在値を参照して書き込む
-    // 相関更新ができないため、UPDATE ... FROM の生SQLを使う。
-    // ステータス・上長の有効性の判定と approverId の代入を1文で原子的に行う
-    // （判定後に上長が無効化されるレースを防ぐ）。
-    // 値は必ず Prisma.sql のテンプレートリテラルでバインドする（文字列結合はしない）。
-    const submittableStatuses = Prisma.join(EXPENSE_SUBMITTABLE_STATUSES);
-    const count = await this.prisma.$executeRaw(Prisma.sql`
+      // Prismaの標準API（updateMany）では他テーブル(users)の現在値を参照して書き込む
+      // 相関更新ができないため、UPDATE ... FROM の生SQLを使う。
+      // ステータス・上長の有効性の判定と approverId の代入を1文で原子的に行う
+      // （判定後に上長が無効化されるレースを防ぐ）。
+      // 値は必ず Prisma.sql のテンプレートリテラルでバインドする（文字列結合はしない）。
+      const submittableStatuses = Prisma.join(EXPENSE_SUBMITTABLE_STATUSES);
+      const count = await tx.$executeRaw(Prisma.sql`
       UPDATE "expense_requests" er
       SET "status" = ${ExpenseStatus.SUBMITTED},
           "approverId" = m."id",
@@ -219,27 +273,63 @@ export class ExpensesService {
         AND m."isActive" = true
     `);
 
-    if (count === 0) {
-      // ステータス競合か上長の競合かを再確認して、対応する409を返す。
-      const current = await this.prisma.expenseRequest.findFirst({
+      if (count === 0) {
+        // ステータス競合か上長の競合かを再確認して、対応する409を返す。
+        const current = await tx.expenseRequest.findFirst({
+          where: { id, applicantId },
+        });
+        if (
+          !current ||
+          !EXPENSE_SUBMITTABLE_STATUSES.includes(
+            current.status as ExpenseStatus,
+          )
+        ) {
+          throw this.conflictInvalidStatus();
+        }
+        throw this.conflictManagerNotSet();
+      }
+
+      const after = await tx.expenseRequest.findFirst({
         where: { id, applicantId },
       });
-      if (
-        !current ||
-        !EXPENSE_SUBMITTABLE_STATUSES.includes(current.status as ExpenseStatus)
-      ) {
-        throw this.conflictInvalidStatus();
+      if (!after) {
+        throw this.notFound();
       }
-      throw this.conflictManagerNotSet();
-    }
 
-    const updated = await this.prisma.expenseRequest.findFirst({
-      where: { id, applicantId },
+      await this.auditLog.record(tx, {
+        actorUserId: applicantId,
+        action: AuditAction.EXPENSE_SUBMIT,
+        result: AuditResult.SUCCESS,
+        targetType: AuditTargetType.EXPENSE_REQUEST,
+        targetId: id,
+        before: this.auditLog.expenseSnapshot(existing),
+        after: this.auditLog.expenseSnapshot(after),
+        ipAddress,
+      });
+      return after;
     });
-    if (!updated) {
-      throw this.notFound();
-    }
     return this.toDto(updated);
+  }
+
+  /**
+   * 自分の申請の行ロックを取って（SELECT ... FOR UPDATE）読む。無ければnull（他人・存在しない）。
+   * 同じ申請への同時操作を直列化し、監査ログのbefore/afterを正確にする。
+   * 条件にapplicantIdを含める（他人の申請はロックも読み取りもしない）。
+   */
+  private async lockOwned(
+    tx: Prisma.TransactionClient,
+    applicantId: string,
+    id: string,
+  ): Promise<ExpenseRequest | null> {
+    const locked = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+      SELECT "id" FROM "expense_requests"
+      WHERE "id" = ${id}::uuid AND "applicantId" = ${applicantId}::uuid
+      FOR UPDATE
+    `);
+    if (locked.length === 0) {
+      return null;
+    }
+    return tx.expenseRequest.findFirst({ where: { id, applicantId } });
   }
 
   private toDto(expense: ExpenseRequest): ExpenseRequestDto {

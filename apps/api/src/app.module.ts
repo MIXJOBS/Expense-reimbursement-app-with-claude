@@ -10,6 +10,7 @@ import { AuthModule } from './auth/auth.module';
 import { AdminModule } from './admin/admin.module';
 import { ExpensesModule } from './expenses/expenses.module';
 import { ApprovalsModule } from './approvals/approvals.module';
+import { AuditModule } from './audit/audit.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { ApprovalsModule } from './approvals/approvals.module';
     }),
     PrismaModule,
     CommonModule,
+    AuditModule,
     AuthModule,
     AdminModule,
     ExpensesModule,

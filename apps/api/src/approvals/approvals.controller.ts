@@ -15,6 +15,7 @@ import {
   type ExpenseRequestDto,
 } from '@expense/shared';
 import { CurrentUser } from '../auth/current-user.decorator';
+import { ClientIp } from '../common/decorators/client-ip.decorator';
 import type { AuthenticatedUser } from '../auth/current-user';
 import { RoleGuard } from '../admin/role.guard';
 import { Roles } from '../admin/roles.decorator';
@@ -50,8 +51,9 @@ export class ApprovalsController {
   async approve(
     @CurrentUser() currentUser: AuthenticatedUser,
     @Param('id', new ParseUUIDPipe()) id: string,
+    @ClientIp() ipAddress: string | null,
   ): Promise<ExpenseRequestDto> {
-    return this.approvalsService.approve(currentUser.id, id);
+    return this.approvalsService.approve(currentUser.id, id, ipAddress);
   }
 
   @Post(':id/return')
@@ -60,7 +62,13 @@ export class ApprovalsController {
     @CurrentUser() currentUser: AuthenticatedUser,
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: ReturnExpenseRequestDto,
+    @ClientIp() ipAddress: string | null,
   ): Promise<ExpenseRequestDto> {
-    return this.approvalsService.returnRequest(currentUser.id, id, dto.reason);
+    return this.approvalsService.returnRequest(
+      currentUser.id,
+      id,
+      dto.reason,
+      ipAddress,
+    );
   }
 }

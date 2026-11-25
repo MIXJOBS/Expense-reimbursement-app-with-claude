@@ -13,6 +13,7 @@ import { Request, Response } from 'express';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import type { CurrentUserDto, LoginResponseBody } from '@expense/shared';
 import { Public } from '../common/decorators/public.decorator';
+import { ClientIp } from '../common/decorators/client-ip.decorator';
 import { CurrentUser } from './current-user.decorator';
 import type { AuthenticatedUser } from './current-user';
 import { AuthService } from './auth.service';
@@ -55,9 +56,10 @@ export class AuthController {
   @HttpCode(HttpStatus.NO_CONTENT)
   async logout(
     @CurrentUser() currentUser: AuthenticatedUser,
+    @ClientIp() ipAddress: string | null,
     @Res({ passthrough: true }) res: Response,
   ): Promise<void> {
-    await this.authService.logout(currentUser.sessionId);
+    await this.authService.logout(currentUser, ipAddress);
     clearSessionCookie(res);
   }
 
