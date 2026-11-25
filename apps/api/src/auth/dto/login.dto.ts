@@ -12,7 +12,9 @@ export class LoginDto implements LoginRequestBody {
   @MaxLength(AUDIT_ACTOR_EMAIL_MAX_LENGTH)
   email: string;
 
+  // argon2に巨大な入力を渡さないよう上限を付ける（PBI6 軽微-5）。
   @IsString()
   @MinLength(1)
+  @MaxLength(256)
   password: string;
 }

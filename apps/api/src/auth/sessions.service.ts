@@ -75,13 +75,6 @@ export class SessionsService {
     return result.count === 1;
   }
 
-  async revokeByTokenHash(tokenHash: string): Promise<void> {
-    await this.prisma.session.updateMany({
-      where: { tokenHash, revokedAt: null },
-      data: { revokedAt: new Date() },
-    });
-  }
-
   /**
    * 生トークンから有効なセッション＋ユーザーを検証して取得する。
    * 無効（存在しない・revoked・絶対期限切れ・スライディング期限切れ・

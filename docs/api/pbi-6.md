@@ -66,7 +66,8 @@ PBI6（監査ログ）で提案するAPI・テーブル・記録方式のまと�
 4. **リクエストボディをそのまま保存しない**：Interceptorでリクエスト／レスポンスの本文を丸ごと保存する方式は、ログインのボディ（パスワード）が混入する典型的な事故になるため採らない（却下案の理由の一つ）。
 5. **ログイン失敗の入力メールアドレス**：保存してよい唯一の「ユーザー入力そのもの」。`LoginDto`の`@IsEmail()`を通った値だけ、254文字まで。パスワードは絶対に保存しない。メール欄に誤ってパスワードを入れる事故は、メール形式の入力だけを記録するので残りのリスクは受容する（PO判断No.6）。
 6. **IPアドレス**：`req.ip`。`TRUST_PROXY`が未設定だとリバースプロキシのIPになるため、デプロイ時は`TRUST_PROXY`を正しく設定する（`apps/api/src/configure-app.ts`の既存方針と同じ。偽装可能な`X-Forwarded-For`を直接信用しない）。
-7. **ログ出力**：記録失敗時のアプリログにも`before`/`after`・メールアドレスを出さない（`action`・`targetType`・`targetId`・エラー種別だけ）。
+7. **ログ出力**：記録失敗時のアプリログにも`before`/`after`・メールアドレスを出さない（`action`・`targetType`・`targetId`・エラー種別だけ）。Prisma・DBの例外はメッセージに`data`の値（入力メール・申請の自由入力）を含み得るため、`AuditLogService.record`のcatchで、固定文言の`AuditRecordError`（`audit record failed (<エラー名> <コード>)`。元の例外はcauseにも持たない）に包み直して投げる。さらに、グローバルの`HttpExceptionFilter`は、想定外の例外のログを**エラー名・コード・スタックの位置情報（`at ...`の行）だけ**にし、例外メッセージを出さない（PO判断：PBI 6セキュリティレビュー 要修正-2）。
+8. **キーのホワイトリスト検証**：`record`は`before`/`after`のキーが、対象の種類のホワイトリスト（`AUDIT_SNAPSHOT_FIELDS`）に含まれることを確認し、含まれないキーがあれば例外にする（業務更新もロールバック）。`ROLE_GRANT`・`ROLE_REVOKE`は`targetType=USER`だが`USER_ROLE`の項目で検証する。`USER`・`SESSION`・`RECEIPT`は項目が空なので、`before`/`after`は常にnull（PBI5で領収書に載せる項目を決めたら`AUDIT_SNAPSHOT_FIELDS`に足す）。
 
 ## 追記専用の担保（改ざん・削除対策）
 
@@ -92,7 +93,20 @@ PBI6（監査ログ）で提案するAPI・テーブル・記録方式のまと�
 
    - 受け入れ条件は`UPDATE`と`DELETE`だが、`TRUNCATE`は行単位トリガーが発火せず、全件消去できてしまうため、同じ関数を文単位トリガーで追加する（PO判断No.9で採用）。
    - トリガーの例外はアプリの500になる（内部情報は返さない）。
-3. **残るリスクと推奨（スコープ外の運用）**：テーブルの所有者・スーパーユーザーは`ALTER TABLE ... DISABLE TRIGGER`や`DROP TRIGGER`ができる。本番では、アプリ用のDBロールにこのテーブルの`UPDATE`・`DELETE`・`TRUNCATE`・`TRIGGER`権限を与えず（`INSERT`・`SELECT`のみ）、マイグレーション用ロールと分離することを推奨する。ハッシュチェーン（行ごとに前行のハッシュを含める改ざん検知）は、10〜50人規模では過剰として今回は見送る。
+3. **DBロールの分離（本番の必須要件）**：トリガーだけでは、次の手段で追記専用を破れる。
+   - `SET session_replication_role = replica`（既定のトリガーが発火しなくなる。PostgreSQL 16以降は`SET`権限を付与されたロールも使える）
+   - `ALTER TABLE ... DISABLE TRIGGER`／`DROP TRIGGER`（テーブルの所有者・スーパーユーザー）
+   - `DROP TABLE`
+   - `CREATE OR REPLACE FUNCTION audit_logs_reject_mutation()`で関数の中身を空にする
+
+   そのため本番では、次の2つのロールを**必ず分ける**。
+   - **マイグレーション用ロール（テーブルの所有者）**：`prisma migrate deploy`だけに使う。アプリの実行時には使わない。
+   - **アプリ用ロール**：スーパーユーザーではなく、`SET`権限（`GRANT SET ON PARAMETER`）も持たない。`audit_logs`は`INSERT`・`SELECT`のみ（`UPDATE`・`DELETE`・`TRUNCATE`・`TRIGGER`を与えない）。テーブルの所有者にしない。
+
+   これにより、アプリ側の脆弱性（SQLインジェクション等）が起きても、監査ログの改ざん・削除ができない。ロールを作るSQLの例は`.env.example`のコメントに書く。
+   - **起動時チェック（実装済み）**：`NODE_ENV=production`で、DB接続ユーザーがスーパーユーザー（`current_setting('is_superuser')`が`off`以外）なら、APIは起動を止める（`apps/api/src/prisma/assert-not-superuser.ts`、`PrismaService.onModuleInit`から呼ぶ）。開発・テストでは止めない（docker-composeの`POSTGRES_USER`がスーパーユーザーのため）。このチェックは、スーパーユーザー以外の「所有者」や`SET`権限の付与までは検出しない。ロールの設計で守る。
+   - **宿題**：docker-composeの2ロール化と、本番デプロイでのロール作成・`migrate deploy`の接続分離は、本番デプロイを作るときに行う（PO判断）。
+   - ハッシュチェーン（行ごとに前行のハッシュを含める改ざん検知）は、10〜50人規模では過剰として今回は見送る。
 4. **テスト環境への影響（テスト担当への連絡）**：既存e2eは`user.deleteMany`等で後始末をするが、`audit_logs`にはFKがないため影響しない。一方、テストから`audit_logs`を削除・全件消去することはできなくなる。テストは、そのテストで作ったユーザー・申請のIDで絞り込んで検証する（全件数に依存しない）。テストDB全体の初期化は`migrate reset`（スキーマごと作り直し）で行う。
 
 ## 記録方式の判断：InterceptorかService内か

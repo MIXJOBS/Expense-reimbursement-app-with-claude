@@ -34,6 +34,28 @@ export interface AuditRecordInput {
   ipAddress?: string | null;
 }
 
+// 記録失敗を表す例外。メッセージは固定文言（＋エラー種別）だけで、Prismaの例外メッセージ
+// （呼び出し箇所のコードや data の値＝入力メール・申請の自由入力を含み得る）は持たない。
+// 元の例外（cause）も保持しない（ログ出力時にcause経由で漏れるのを防ぐ）。
+export class AuditRecordError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AuditRecordError';
+  }
+}
+
+// before/after に載せてよいキーの集合。targetType では USER_ROLE を区別できない
+// （ロール変更は targetType=USER）ため、ロール変更の action だけ USER_ROLE を使う。
+function allowedSnapshotKeys(
+  action: AuditAction,
+  targetType: AuditTargetType,
+): readonly string[] {
+  if (action === 'ROLE_GRANT' || action === 'ROLE_REVOKE') {
+    return AUDIT_SNAPSHOT_FIELDS.USER_ROLE;
+  }
+  return AUDIT_SNAPSHOT_FIELDS[targetType];
+}
+
 // 申請の行から、ホワイトリスト項目だけを取り出すための最小の型。
 // User行のような機微情報を持つ行は、この型に当てはまらない。
 export interface ExpenseSnapshotSource {
@@ -63,8 +85,9 @@ export class AuditLogService {
     entry: AuditRecordInput,
   ): Promise<void> {
     try {
-      const before = this.checkSnapshot(entry.before);
-      const after = this.checkSnapshot(entry.after);
+      const allowedKeys = allowedSnapshotKeys(entry.action, entry.targetType);
+      const before = this.checkSnapshot(entry.before, allowedKeys);
+      const after = this.checkSnapshot(entry.after, allowedKeys);
       this.checkLength(
         entry.actorEmail,
         AUDIT_ACTOR_EMAIL_MAX_LENGTH,
@@ -96,7 +119,15 @@ export class AuditLogService {
       this.logger.error(
         `audit record failed: action=${entry.action} targetType=${entry.targetType} targetId=${entry.targetId ?? 'null'} error=${error instanceof Error ? error.name : 'unknown'}`,
       );
-      throw error;
+      // 自前の検証エラー（固定文言）はそのまま投げる。Prisma・DBの例外は、メッセージに
+      // data の値（入力メール・申請の自由入力）を含み得るため、機微情報の無い例外に
+      // 包み直す。呼び出し元のTxはロールバックされ、500になる。
+      if (error instanceof AuditRecordError) {
+        throw error;
+      }
+      throw new AuditRecordError(
+        `audit record failed (${error instanceof Error ? error.name : 'unknown'}${safeErrorCode(error)})`,
+      );
     }
   }
 
@@ -129,23 +160,28 @@ export class AuditLogService {
 
   private checkSnapshot(
     snapshot: AuditSnapshot | null | undefined,
+    allowedKeys: readonly string[],
   ): Prisma.InputJsonObject | null {
     if (snapshot === null || snapshot === undefined) {
       return null;
     }
     for (const [key, value] of Object.entries(snapshot)) {
+      // 対象の種類ごとのホワイトリストに無いキーは載せない（キー名はメッセージに出さない）。
+      if (!allowedKeys.includes(key)) {
+        throw new AuditRecordError('audit snapshot contains a key not allowed');
+      }
       // ホワイトリストが正しければ発火しない、実装ミス検出用の二重の防御。
       if (AUDIT_FORBIDDEN_KEY_PATTERN.test(key)) {
-        throw new Error('audit snapshot contains a forbidden key');
+        throw new AuditRecordError('audit snapshot contains a forbidden key');
       }
       if (value !== null && typeof value === 'object') {
-        throw new Error('audit snapshot must be flat');
+        throw new AuditRecordError('audit snapshot must be flat');
       }
     }
     if (
       Buffer.byteLength(JSON.stringify(snapshot)) > AUDIT_SNAPSHOT_MAX_BYTES
     ) {
-      throw new Error('audit snapshot is too large');
+      throw new AuditRecordError('audit snapshot is too large');
     }
     return snapshot as Prisma.InputJsonObject;
   }
@@ -156,9 +192,17 @@ export class AuditLogService {
     name: string,
   ): void {
     if (value !== null && value !== undefined && value.length > max) {
-      throw new Error(`audit ${name} is too long`);
+      throw new AuditRecordError(`audit ${name} is too long`);
     }
   }
+}
+
+// Prisma・pgのエラーコード（P2002 等）だけを取り出す。コードに見えない値は出さない。
+function safeErrorCode(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && /^[A-Za-z0-9_-]{1,16}$/.test(code)
+    ? ` ${code}`
+    : '';
 }
 
 // ホワイトリストの項目一覧と実装の取り出し項目がずれていないことを、
