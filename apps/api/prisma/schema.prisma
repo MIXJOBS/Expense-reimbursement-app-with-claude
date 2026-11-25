@@ -9,6 +9,7 @@
 // 以下、PBI1（ログイン・ログアウト）・PBI2（ロールと権限）で確定した設計を反映。
 // PBI3（経費申請の登録・編集）で ExpenseRequest を追加。
 // PBI4（承認・差し戻し）で ExpenseRequest に approverId・returnReason を追加。
+// PBI6（監査ログ）で AuditLog を追加（追記専用。トリガーはマイグレーションに手書き）。
 // 経理確認（確認者・確認日時等のカラム）はPBI5のスコープのため、
 // 現時点では追加しない（詳細は ExpenseRequest モデルのコメント参照）。
 
@@ -239,4 +240,75 @@ model ExpenseRequest {
   // [approverId, status]の複合インデックスを張る（PBI4）。
   @@index([approverId, status])
   @@map("expense_requests")
+}
+
+// ============================================================
+// AuditLog（監査ログ。PBI6）
+// ============================================================
+// 誰が・いつ・何に・何をしたか・結果・変更前後の値・IPアドレスを残す、追記専用のテーブル。
+// 設計の詳細は docs/api/pbi-6.md を参照。
+//
+// 追記専用の担保（二重）：
+// - アプリ：このテーブルへの update / updateMany / upsert / delete / deleteMany を
+//   呼ぶコードを書かない（作成は AuditLogService.record の create のみ）。
+// - DB：マイグレーションに手書きSQLで BEFORE UPDATE OR DELETE（行単位）と
+//   BEFORE TRUNCATE（文単位）のトリガーを追加し、例外を投げて拒否する。
+//   Prismaのスキーマ記法ではトリガーを表現できないため、`prisma migrate dev --create-only`
+//   で生成したマイグレーションSQLに追記する（実装フェーズで行う。今回は作らない）。
+//
+// 外部キーを張らない理由（意図的）：
+// - actorUserId / targetId は「記録した時点のID」の事実であり、対象（申請の削除など）が
+//   後で消えてもログは残す必要がある（targetId は種類により参照先が違う多態参照でもある）。
+// - 参照整合性のためにユーザー行・申請行の削除（e2eテストの後始末を含む）が監査ログに
+//   邪魔されたり、逆に監査ログの追記専用トリガーとFKの連鎖動作が衝突したりするのを避ける。
+// - 値の正しさは AuditLogService が書き込み時に保証する（呼び出し元は認証済みの
+//   ユーザーIDと、同一トランザクション内で操作した対象のIDしか渡さない）。
+//
+// 機微情報を入れない：before / after はホワイトリスト方式（packages/shared の
+// AUDIT_SNAPSHOT_FIELDS）で作る。password・passwordHash・Cookie・セッショントークンの
+// 入る列・入り得る自由記述の列は、このテーブルに存在しない。
+model AuditLog {
+  id String @id @default(uuid()) @db.Uuid
+
+  // いつ。DB側の clock_timestamp()（INSERT文の実行時刻）で採番する。
+  // now() はトランザクション開始時刻になり、行ロックを待った側が「先に開始したが後に
+  // コミットした」順序逆転を起こし得るため使わない（実行順＝記録順にする）。
+  // タイムゾーンの取り違えを避けるため、他のモデルと違い timestamptz にする。
+  occurredAt DateTime @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(3)
+
+  // 誰が。未認証の操作（ログイン失敗）は null。User への外部キーは張らない（上記参照）。
+  actorUserId String? @db.Uuid
+  // ログイン失敗時に入力されたメールアドレス（それ以外は null）。
+  // 利用者が誤ってパスワードをメール欄に入れた可能性に備え、LoginDto の @IsEmail() を
+  // 通った値だけを、254文字までで保存する（詳細は docs/api/pbi-6.md）。
+  actorEmail String? @db.VarChar(254)
+
+  // 何を / 結果。packages/shared の AuditAction / AuditResult / AuditFailureCode の値を
+  // 文字列で保存する（Role.name・ExpenseRequest.status と同じ方針。Enumカラムにしない）。
+  action      String
+  result      String
+  failureCode String?
+
+  // 何に。packages/shared の AuditTargetType と対象のID。
+  // 対象が特定できない場合（存在しないメールアドレスでのログイン失敗）は targetId が null。
+  targetType String
+  targetId   String? @db.Uuid
+
+  // 変更前後の値。フラットなJSON（ネストなし）、8KB以内、ホワイトリストの項目のみ。
+  // 状態を変えない操作（ログイン・ログアウト等）や、新規作成の before・削除の after は null。
+  before Json?
+  after  Json?
+
+  // 操作元のIPアドレス（req.ip。IPv6なら最大45文字）。
+  // TRUST_PROXY の設定次第でリバースプロキシのIPになる点に注意（docs/api/pbi-6.md）。
+  ipAddress String? @db.VarChar(45)
+
+  // 閲覧API（GET /admin/audit-logs）は occurredAt 降順＋id降順で並べ、
+  // 操作者（actorUserId・actorEmail）・対象・期間で絞り込む。それぞれに対応するインデックス。
+  @@index([occurredAt])
+  @@index([actorUserId, occurredAt])
+  // actorEmail の完全一致での絞り込み（特定のメールアドレスへの攻撃の調査。PO判断No.4）。
+  @@index([actorEmail, occurredAt])
+  @@index([targetType, targetId, occurredAt])
+  @@map("audit_logs")
 }
