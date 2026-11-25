@@ -2,7 +2,6 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
-  Optional,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
@@ -30,13 +29,11 @@ interface ActiveAdminRow {
 
 @Injectable()
 export class RolesService {
-  // AuditLogService は依存を持たない（記録先のtxは呼び出しごとに渡す）ため、
-  // 単体テストでDIに登録されていない場合は同じ実装の既定インスタンスを使う
-  // （本番・e2eではAuditModuleから必ず注入される。記録が無効になることはない）。
+  // AuditLogService は必須依存（AuditModuleが@Globalで公開）。
+  // 単体テストでも必ずモックを登録する。
   constructor(
     private readonly prisma: PrismaService,
-    @Optional()
-    private readonly auditLog: AuditLogService = new AuditLogService(),
+    private readonly auditLog: AuditLogService,
   ) {}
 
   /**
@@ -109,8 +106,7 @@ export class RolesService {
     actorUserId: string,
     targetUserId: string,
     roleId: string,
-    // 既存の単体テストが3引数で呼ぶため既定値を持つ。実際の呼び出し元（Controller）は必ず渡す。
-    ipAddress: string | null = null,
+    ipAddress: string | null,
   ): Promise<void> {
     this.assertNotSelf(actorUserId, targetUserId);
 

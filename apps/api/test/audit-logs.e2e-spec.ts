@@ -613,7 +613,7 @@ describe('Audit logs (e2e)', () => {
       expect((await grant()).status).toBe(201);
       expect(await countLogs([admin.userId], [target.userId])).toBe(base + 1);
 
-      const again = await grant(); // 設計書は「204」と書くが現行実装は201を返す想定（報告の曖昧点）
+      const again = await grant(); // 再付与（すでに保持している場合）の応答は201（204ではない）。ただし監査ログは記録しない
       expect(again.status).toBeGreaterThanOrEqual(200);
       expect(again.status).toBeLessThan(300);
       expect(await countLogs([admin.userId], [target.userId])).toBe(base + 1);

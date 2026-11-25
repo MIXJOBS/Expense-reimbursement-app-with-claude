@@ -58,3 +58,13 @@
 - from・toの形式：オフセットがあれば、秒なし・ミリ秒ありも受け付けてよい
 - 8KB上限：申請の内容は200文字、差し戻し理由は500文字までなので超えない。今回はテスト不要
 - 領収書の元のファイル名を監査ログに載せるか：PBI 5の設計で決める
+
+## PO判断：PBI 6実装報告への回答（2026-11-25）
+
+対象：`.reports/2026-11-25-1546-backend-pbi6-impl.md`
+
+- No.4 RolesServiceの `@Optional()` と既定値：本番コードをテストの都合に合わせて曲げない。test-agentが roles.service.spec.ts に AuditLogService のモックを登録し、revokeRole の呼び出しを新しい引数に合わせる。そのあとbackend-engineerが `@Optional()` と既定値を外して必須にする
+- No.2 テストの古いコメント（204）：test-agentが修正
+- No.3 docs/api/pbi-1-2.md の古い記述：backend-engineerが修正
+- No.5 DBユーザーの権限分離（アプリ用ユーザーはINSERT・SELECTのみ、テーブルの所有者にしない）：本番デプロイを作るときの宿題
+- この文書（sprint-3.md）の追記分もコミットする

@@ -58,7 +58,7 @@ PBI1（ログイン・ログアウト）・PBI2（ロールと権限）で確定
 - すべてのエンドポイントで、入力はDTO＋ValidationPipe（`whitelist`, `forbidNonWhitelisted`）により検証し、想定外のプロパティは拒否する。
 - 500エラー（`INTERNAL_ERROR`）はスタックトレースやSQLなどの内部情報を含めず、`{ code, message }`の統一形式で返す。
 - 他人のリソースに対する不正な参照は404を返す方針だが、本ドキュメントのロール管理APIは「管理者が任意ユーザーを操作する」業務が正規フローのため、対象ユーザー不存在は404、権限不足（ADMINロールなし）は403という区別を採用する。
-- ロール変更（付与・剥奪）は監査ログの対象。記録の実装自体はSprint3だが、`packages/shared`の`RoleChangeAuditPayload`型で変更者・対象者・変更前後を渡せる形にしておく。
+- ロール変更（付与・剥奪）は監査ログの対象（PBI 6で実装済み。詳細は`docs/api/pbi-6.md`）。`RolesService`は`AuditLogService`を必須依存として受け取り、付与・剥奪と同一トランザクションで`ROLE_GRANT`／`ROLE_REVOKE`を記録する。すでに保持しているロールの再付与は応答が新規付与と同じ201で、ログは記録しない。`RoleChangeAuditPayload`型はPBI 6で削除済み。
 
 ## マイグレーション
 
