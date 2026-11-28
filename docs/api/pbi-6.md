@@ -1,7 +1,7 @@
 # PBI6 監査ログ 設計
 
-PBI6（監査ログ）で提案するAPI・テーブル・記録方式のまとめ。
-**このドキュメント作成時点では設計のみ**（Controller/Service/Interceptor/マイグレーション/テストは未着手）。
+PBI6（監査ログ）のAPI・テーブル・記録方式のまとめ。
+設計として作成し、現在は**実装済み**（Controller／Service／マイグレーション／テスト。セキュリティレビュー指摘への対応を含む。Interceptorは使わない）。
 受け入れ条件の出典は`docs/requirements/sprint-3.md`。フォーマットは`docs/api/pbi-4.md`に合わせる。
 「判断が必要な点」14件には、2026-11-25にPOの回答があった（`docs/requirements/sprint-3.md`の「PO判断：PBI 6設計への回答」）。回答の反映結果は末尾の「判断が必要な点（PO回答と反映結果）」にまとめた。宿題として後回しになった項目は、同節の「宿題一覧」を参照。
 
@@ -29,9 +29,9 @@ PBI6（監査ログ）で提案するAPI・テーブル・記録方式のまと�
 | `before` / `after` | json? | **変更前後の値**。フラットなJSON・8KB以内・ホワイトリストの項目のみ |
 | `ipAddress` | varchar(45)? | **IPアドレス**（`req.ip`） |
 
-- 型・定数は`packages/shared/src/audit.ts`、モデルは`apps/api/prisma/schema.prisma`の`AuditLog`（どちらも今回追加済み。マイグレーションは未作成）。
+- 型・定数は`packages/shared/src/audit.ts`、モデルは`apps/api/prisma/schema.prisma`の`AuditLog`。マイグレーションは`apps/api/prisma/migrations/20261125000000_add_audit_logs/`。
 - **外部キーを張らない理由（意図的）**：`targetId`は種類によって参照先が違う多態参照で、削除された申請（`EXPENSE_DELETE`）の記録も残す必要がある。`actorUserId`もUser削除経路（e2eテストの後始末の`user.deleteMany`など）とログの保持を切り離したい。値の正しさは`AuditLogService`が書き込み時に保証する。
-- インデックス：`[occurredAt]`、`[actorUserId, occurredAt]`、`[targetType, targetId, occurredAt]`（閲覧APIの絞り込み・並び順に対応）。
+- インデックス：`[occurredAt]`、`[actorUserId, occurredAt]`、`[actorEmail, occurredAt]`、`[targetType, targetId, occurredAt]`（閲覧APIの絞り込み・並び順に対応）。
 - 並び順は`occurredAt`降順、同時刻は`id`降順（ページ間で順序が揺れないようにする）。
 
 ## 記録対象の操作一覧
@@ -71,14 +71,14 @@ PBI6（監査ログ）で提案するAPI・テーブル・記録方式のまと�
 
 ## 追記専用の担保（改ざん・削除対策）
 
-1. **アプリ側**：`prisma.auditLog`に対する`update`・`updateMany`・`upsert`・`delete`・`deleteMany`を呼ぶコードを書かない。作成は`AuditLogService.record`内の`create`1箇所だけ。更新・削除のAPIも作らない。コードの監視として、ソース全体を検索して上記メソッド呼び出しが存在しないことを確認するテスト（テスト担当）を置くことを提案する。
-2. **DB側（受け入れ条件）**：マイグレーションに手書きSQLで以下を追加する。`prisma migrate dev --create-only`で生成したSQLの末尾に追記する（Prismaのスキーマではトリガーを表現できないため）。
+1. **アプリ側**：`prisma.auditLog`に対する`update`・`updateMany`・`upsert`・`delete`・`deleteMany`を呼ぶコードを書かない。作成は`AuditLogService.record`内の`create`1箇所だけ。更新・削除のAPIも作らない。コードの監視として、ソースを検索して`auditLog`の更新・削除メソッド呼び出しが無いことを確認するテストがある（`apps/api/test/audit-logs.e2e-spec.ts`）。
+2. **DB側（受け入れ条件）**：マイグレーションに手書きSQLで以下を追加している。`prisma migrate dev --create-only`で生成したSQLの末尾に追記した（Prismaのスキーマではトリガーを表現できないため）。
 
    ```sql
-   -- イメージ（実装フェーズで確定）
    CREATE FUNCTION audit_logs_reject_mutation() RETURNS trigger AS $$
    BEGIN
-     RAISE EXCEPTION 'audit_logs is append-only';
+     RAISE EXCEPTION 'audit_logs is append-only (% is not allowed)', TG_OP
+       USING ERRCODE = 'restrict_violation';
    END;
    $$ LANGUAGE plpgsql;
 
@@ -103,7 +103,7 @@ PBI6（監査ログ）で提案するAPI・テーブル・記録方式のまと�
    - **マイグレーション用ロール（テーブルの所有者）**：`prisma migrate deploy`だけに使う。アプリの実行時には使わない。
    - **アプリ用ロール**：スーパーユーザーではなく、`SET`権限（`GRANT SET ON PARAMETER`）も持たない。`audit_logs`は`INSERT`・`SELECT`のみ（`UPDATE`・`DELETE`・`TRUNCATE`・`TRIGGER`を与えない）。テーブルの所有者にしない。
 
-   これにより、アプリ側の脆弱性（SQLインジェクション等）が起きても、監査ログの改ざん・削除ができない。ロールを作るSQLの例は`.env.example`のコメントに書く。
+   これにより、アプリ側の脆弱性（SQLインジェクション等）が起きても、監査ログの改ざん・削除ができない。アプリ用ロールを作るSQLの例は、ルートの`.env.example`のコメントに書く（PO判断。要修正-1(b)。**未反映**：`.env.example`は作業担当の権限で読み書きできないため、貼り付け案を作業報告`.reports/`に載せている）。
    - **起動時チェック（実装済み）**：`NODE_ENV=production`で、DB接続ユーザーがスーパーユーザー（`current_setting('is_superuser')`が`off`以外）なら、APIは起動を止める（`apps/api/src/prisma/assert-not-superuser.ts`、`PrismaService.onModuleInit`から呼ぶ）。開発・テストでは止めない（docker-composeの`POSTGRES_USER`がスーパーユーザーのため）。このチェックは、スーパーユーザー以外の「所有者」や`SET`権限の付与までは検出しない。ロールの設計で守る。
    - **宿題**：docker-composeの2ロール化と、本番デプロイでのロール作成・`migrate deploy`の接続分離は、本番デプロイを作るときに行う（PO判断）。
    - ハッシュチェーン（行ごとに前行のハッシュを含める改ざん検知）は、10〜50人規模では過剰として今回は見送る。
@@ -119,7 +119,7 @@ PBI6（監査ログ）で提案するAPI・テーブル・記録方式のまと�
 
 - 各Serviceの状態変更を`prisma.$transaction(async (tx) => { ... })`で包み、業務の更新が**実際に成功した直後**に同じ`tx`で`auditLogService.record(tx, {...})`を呼ぶ。
 - `record`は`tx`（`Prisma.TransactionClient`）を必須の第1引数にする。`tx`を渡さない呼び出し口を作らない（Txの外で記録できてしまうのを型で防ぐ）。
-- 呼び出し元の情報（操作者・IP）は、ControllerのパラメータデコレータでServiceに渡す（例：`@AuditContext()`が`{ actorUserId, ipAddress }`を返す。既存の`@CurrentUser()`と同じ書き方）。**このためにInterceptorは使わない**。
+- 呼び出し元の情報は、ControllerからServiceに引数で渡す（操作者は既存の`@CurrentUser()`、IPは`@ClientIp()`）。**このためにInterceptorは使わない**。
 - 「更新が実際に成功した」判定は既存の方式をそのまま使う：
   - 承認・差し戻し・編集・削除：条件付き`updateMany`／`deleteMany`の`count`が1のときだけ`record`。0なら既存どおり409（Txはロールバック、ログは書かれない）。
   - 提出：`$executeRaw`の戻り値（影響行数）が1のときだけ`record`。0なら既存どおりの2種類の409。
@@ -150,7 +150,7 @@ PBI6（監査ログ）で提案するAPI・テーブル・記録方式のまと�
 
 > 4. 監査ログ：誰が・いつ・何に・何をしたか・結果と変更前後の値を、`AuditLogService`が**業務の更新と同じトランザクション内**で記録する（Service層で明示的に呼ぶ。Interceptorでは記録しない）。記録に失敗したら業務の更新も失敗させる。追記専用（アプリから更新・削除しない＋DBトリガーで拒否）。変更前後の値はホワイトリストの項目のみで、パスワード・Cookie・トークンは載せない
 
-併せて、`apps/api/prisma/schema.prisma`の`UserRole`のコメント（「監査ログInterceptor側で…」）と`docs/api/pbi-1-2.md`61行目（`RoleChangeAuditPayload`への言及。この型は本PBIで削除済み）も、実装フェーズで修正が必要。
+併せて、`apps/api/prisma/schema.prisma`の`UserRole`のコメントと`docs/api/pbi-1-2.md`の監査ログの記述（削除した`RoleChangeAuditPayload`型への言及）は修正済み。
 
 ## 同時実行・失敗時の挙動
 
@@ -159,7 +159,7 @@ PBI6（監査ログ）で提案するAPI・テーブル・記録方式のまと�
 - **記録（INSERT）自体の失敗**（DB障害・制約違反・サイズ超過・禁止キー検出）：例外がTx外まで伝わりTx全体がロールバックされる。業務更新も反映されない。クライアントには500 `INTERNAL_ERROR`（`{ code, message }`、内部情報なし）を返す。
 - **業務更新の失敗**（409・404・その他の例外）：Txごとロールバックされ、成功ログは残らない。
 - **ログインの失敗ログ**：業務更新が無い（または`failedLoginCount`の更新だけ）ので、`failedLoginCount`更新と同一Txで記録する。記録に失敗したら、ログイン失敗の応答は401ではなく500になる（fail closed。監査できない状態では認証系の操作を進めない）。DB障害時は他の操作も止まっているので影響は小さい。
-- **パスワード検証（argon2）はTxの外で行う**。重い処理の間、DB接続・行ロックを保持しないため。ログイン成功時は、検証後に「`failedLoginCount`リセット＋セッション作成＋監査ログ」を1つのTxで行う（`SessionsService.createSession`・`revokeSession`は`tx`を受け取れるよう引数を追加する。実装フェーズの変更点）。
+- **パスワード検証（argon2）はTxの外で行う**。重い処理の間、DB接続・行ロックを保持しないため。ログイン成功時は、検証後に「`failedLoginCount`リセット＋セッション作成＋監査ログ」を1つのTxで行う（`SessionsService.createSession`・`revokeSession`は`tx`を引数で受け取れる）。
 - **`occurredAt`に`clock_timestamp()`を使う理由**：`now()`はTx開始時刻で、行ロックを待った側が「開始は先だがコミットは後」になると、記録の時刻順と実際の更新順が逆転する。`clock_timestamp()`はINSERT実行時の時刻で、ロック取得後に呼ばれるため、更新の実行順と一致する。
 - **デッドロック**：申請の更新系は「1つの申請行だけをロック」→「INSERT」の順で、複数行の取得順序が絡まない。ロール剥奪は既存の悲観ロック（ADMINロールの`user_roles`行・`users`行）に`audit_logs`のINSERTが加わるだけで、INSERTはロック対象と競合しない（新規行のみ）。ロール変更ではユーザー行への追加ロックを**取らない**（取ると既存のADMIN一括ロックとの取得順序が逆になりデッドロックし得る。差分記録にしたのはこの理由も含む）。
 - **ログの肥大化**：ログイン失敗はIP単位のレート制限（1分10回、既存の`ThrottlerGuard`）の範囲でしか増えない。保持期間・アーカイブは当面なし（PO判断No.8。宿題）。
@@ -202,7 +202,7 @@ PBI6（監査ログ）で提案するAPI・テーブル・記録方式のまと�
 
 ## マイグレーション
 
-今回は**マイグレーションファイルを生成しない**（`prisma/schema.prisma`の変更のみ。`prisma generate`も実行していない）。実装フェーズ着手時に`prisma migrate dev --create-only`で生成し、以下を1つのマイグレーションにまとめる：(1) `audit_logs`テーブルとインデックス、(2) 追記専用トリガー（手書きSQL）。トリガーのSQLを含めたマイグレーションが、`pnpm test:e2e:api`（`migrate deploy`）で正しく適用されることも確認する。
+`apps/api/prisma/migrations/20261125000000_add_audit_logs/migration.sql`の1つに、(1) `audit_logs`テーブルとインデックス、(2) 追記専用トリガー（手書きSQL）をまとめている。`pnpm test:e2e:api`（`migrate deploy`）で適用される。
 
 ## テスト観点（テスト担当への引き継ぎ）
 
@@ -246,9 +246,12 @@ PBI6（監査ログ）で提案するAPI・テーブル・記録方式のまと�
 - 監査ログの閲覧自体の記録（No.5）
 - 保持期間・アーカイブ方針（No.8）
 - レート制限（429）で弾かれた試行の記録（No.14）
+- メールアドレスを保存時・ログイン時に小文字にそろえる（PO判断：PBI 6テストと設計の残りへの回答）
+- DBロールの分離（docker-composeの2ロール化、本番のアプリ用ロール。PO判断：PBI 6実装報告・セキュリティレビューへの回答）
+- 監査専用ロールに分けるか、ログの容量（保持期間の宿題と合わせて扱う。PO判断：セキュリティレビュー 軽微-2・3）
 
-### まだ判断が必要な点
+### 追加の判断（初回の回答後）
 
-1. **領収書の元のファイル名を監査ログに載せてよいか**（No.12の回答は署名付きURL・保存パス・保存ファイル名のみ）。元のファイル名は利用者の自由入力で個人情報を含み得る。**暫定案**：載せない（`RECEIPT_UPLOAD`のbefore/afterはnull）。PBI5設計時にあらためて確認する。
-2. **`actorEmail`絞り込みの大文字小文字**：完全一致を、ログインの検索（`AuthService`の`findUnique`、大文字小文字を区別）に合わせてバイト一致と解釈した。区別せず探したい場合は`citext`や小文字化列の追加が必要になる。**暫定案**：バイト一致のみ。
-3. **No.4の副作用**：`actorEmail`で絞ると、存在しないメールアドレスへの試行（`targetId`＝null）も検索できる（管理者向けの意図どおりと解釈）。No.6で受容したパスワード由来文字列の混入も、管理者が入力値で検索できる点は周知したい。**暫定案**：現状のまま。
+1. **領収書の元のファイル名を監査ログに載せるか**（No.12の回答は署名付きURL・保存パス・保存ファイル名のみ）：**PBI 5の設計で決める**（PO判断）。それまでは載せない。
+2. **`actorEmail`絞り込みの大文字小文字**：**今回はバイト一致のまま**（PO判断）。メールアドレスを小文字にそろえる件は宿題。
+3. **No.4の副作用（周知事項）**：`actorEmail`で絞ると、存在しないメールアドレスへの試行（`targetId`＝null）も検索できる。No.6で受容したパスワード由来文字列の混入も、管理者が入力値で検索できる。

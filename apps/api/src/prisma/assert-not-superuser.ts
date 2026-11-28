@@ -24,7 +24,7 @@ export async function assertNotSuperuserInProduction(
   if (rows[0]?.is_superuser !== 'off') {
     throw new Error(
       'Refusing to start: the database user must not be a superuser in production. ' +
-        'Use a restricted application role (see .env.example).',
+        'Use a restricted application role (see docs/api/pbi-6.md).',
     );
   }
 }

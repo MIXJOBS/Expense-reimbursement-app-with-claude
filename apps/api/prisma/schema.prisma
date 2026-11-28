@@ -92,9 +92,9 @@ model Role {
 // ============================================================
 // UserRole（User と Role の中間テーブル）
 // ============================================================
-// - 誰が・いつ付与したかを残す（監査ログ本体はSprint3だが、最低限の
-//   付与者・付与日時はここに持たせておく。ロール変更の監査ログ（変更前後の値）は
-//   RolesService が AuditLogService で同一トランザクション内に記録する）
+// - grantedById・grantedAt は、現在有効な付与の付与者と付与日時（剥奪すると行ごと消える）。
+// - 付与・剥奪の履歴（変更前後の値）は監査ログ（AuditLog。PBI6）に残る。RolesService が
+//   AuditLogService で、ロール変更と同一トランザクション内に記録する。
 model UserRole {
   id String @id @default(uuid()) @db.Uuid
 
@@ -109,16 +109,12 @@ model UserRole {
 
   grantedAt DateTime @default(now())
 
-  // 「最後のADMIN剥奪防止」チェックの排他制御（確定：悲観ロック）：
-  // DELETE /admin/users/:userId/roles/:roleId の処理中、Prismaの $transaction 内で
-  // ADMINロールを持つ UserRole 行集合に対して SELECT ... FOR UPDATE 相当の
-  // 行ロックをかけた上で件数を数え、剥奪後に0件になる場合は拒否する。
-  // Prismaの標準API（findMany等）は FOR UPDATE を発行できないため、実装時は
-  // $transaction 内で $queryRaw（Prisma.sql）を使い
-  // 「SELECT ... FROM user_roles ... WHERE role_id = :adminRoleId FOR UPDATE」
-  // を発行してロック取得→カウント→DELETEを同一トランザクションで行う方式を取る
-  // （楽観ロック(updatedAtやバージョン列での競合検出)ではなく、悲観ロックで
-  // 同時剥奪のレースコンディションそのものを未然に防ぐ）。
+  // 「最後のADMIN剥奪防止」チェックの排他制御（悲観ロック。RolesService.revokeRole）：
+  // Prismaの標準API（findMany等）は FOR UPDATE を発行できないため、$transaction 内で
+  // $queryRaw（Prisma.sql）を使い、ADMINロールを持つ user_roles 行と対応する users 行を
+  // FOR UPDATE OF ur, u でロックする。対象を除く isActive=true の保持者が0人になる場合は
+  // 拒否する。ロック取得→カウント→削除→監査ログの記録を同一トランザクションで行う
+  // （楽観ロックではなく悲観ロックで、同時剥奪のレースコンディションを防ぐ）。
   @@unique([userId, roleId]) // 同一ユーザーに同一ロールを重複付与しない
   @@map("user_roles")
 }
