@@ -84,3 +84,16 @@
 - 軽微-3 ログの容量：保持期間の宿題と合わせて扱う
 - 軽微-4 未使用の revokeByTokenHash：削除する
 - 軽微-5 パスワードの最大長：@MaxLength(256) を付ける（既存のテストで確認）
+
+## PO判断：PBI 6マージ保留への回答（2026-11-28）
+
+対象：`.reports/2026-11-28-1558-sm-pbi6-merge-hold.md`、`.reports/2026-11-28-1557-security-pbi6-rereview2.md`
+
+- 要修正-1(b) の置き場所を変更：ロール分離のSQL手順は `.env.example` ではなく、新しく `docs/ops/production-db-roles.md`（手順書）に書く。手順書は誰でも読めて、設定ファイルのコメントより長い手順に向いているため。backend-engineerが作成する
+  - 中身はバックエンドの貼り付け案（改訂版）に、レビューの「追記前に直すとよい点」1・2・4・5・6・7を反映する（メンバーシップの注記、確認SQL、PASSWORD句を使わず \password で設定、BEGIN/COMMITとON_ERROR_STOP、既定権限の注意、文言の修正）。3（既存DBの引き継ぎ）は注記だけでよい
+  - `.env.example` には「本番のDBロール分離は docs/ops/production-db-roles.md を参照」の1行だけをSMが手で追記する
+  - `docs/api/pbi-6.md` の「未反映」の注記と `.reports/` への参照を消し、手順書を参照する形にする（再レビュー軽微-1も解消）。起動エラーの参照先も手順書にする
+- 依存の脆弱性（high 2件）：2026-11-23にPOがリスク受容済み（Prisma 6の設定読み込み部品で、外部からの入力が届かない）。DoDの「重大な指摘がない」は、high以上は原則NG・ただし理由と見直し時期を記録して受容したものは除く、と解釈する。Prisma 7への移行時に解消する
+- 起動時のスーパーユーザーチェック：安全側に倒し、NODE_ENVが development・test のどちらでもない場合（未設定を含む）は本番扱いにする。開発用の起動スクリプトでは NODE_ENV=development を明示する。ALLOWED_ORIGINSの起動チェックも同じ判定にそろえる
+- パスワード256・257文字の境界テスト：test-agentが追加する
+- schema.prisma に残る古いコメント：backend-engineerが直す

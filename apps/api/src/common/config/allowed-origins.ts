@@ -1,16 +1,15 @@
 // CSRF対策（Origin検証）・CORS設定で共通して使う「許可されたOrigin一覧」。
 //
 // 環境変数 ALLOWED_ORIGINS（カンマ区切り）で設定する。未設定の場合:
-// - NODE_ENV=production では、許可オリジン未設定のまま本番で動くことを防ぐため、
+// - 本番扱い（判定は is-production-env.ts。NODE_ENV が development・test の
+//   どちらでもない場合。未設定を含む）では、許可オリジン未設定のまま本番で動くことを防ぐため、
 //   assertAllowedOriginsConfigured() がアプリ起動時にエラーを発生させ、起動を止める。
 // - それ以外（開発・テスト環境）では、apps/web の開発サーバ（Vite既定ポート）のみを
 //   許可するデフォルト値を使う
 //   （test/support/fixtures.ts の ALLOWED_ORIGIN = 'http://localhost:5173' と一致させる）。
-const DEFAULT_ALLOWED_ORIGINS = ['http://localhost:5173'];
+import { isProductionEnv } from './is-production-env';
 
-function isProductionEnv(): boolean {
-  return process.env.NODE_ENV === 'production';
-}
+const DEFAULT_ALLOWED_ORIGINS = ['http://localhost:5173'];
 
 function parseAllowedOrigins(raw: string): string[] {
   return raw
@@ -22,7 +21,7 @@ function parseAllowedOrigins(raw: string): string[] {
 export function getAllowedOrigins(): Set<string> {
   const raw = process.env.ALLOWED_ORIGINS;
   if (!raw || raw.trim() === '') {
-    // production環境での未設定は起動時チェック（assertAllowedOriginsConfigured）で
+    // 本番扱いの環境での未設定は起動時チェック（assertAllowedOriginsConfigured）で
     // 既に起動を止めているはずだが、呼び出され得る場合に備えて二重に防御する。
     if (isProductionEnv()) {
       throw new Error(
@@ -38,7 +37,7 @@ export function getAllowedOrigins(): Set<string> {
 }
 
 // アプリ起動時（CommonModuleの初期化時）に一度だけ呼び、
-// production環境でALLOWED_ORIGINSが未設定のままアプリが起動することを防ぐ。
+// 本番扱いの環境でALLOWED_ORIGINSが未設定のままアプリが起動することを防ぐ。
 export function assertAllowedOriginsConfigured(): void {
   const raw = process.env.ALLOWED_ORIGINS;
   const isConfigured =

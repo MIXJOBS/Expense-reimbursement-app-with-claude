@@ -103,8 +103,8 @@ PBI6（監査ログ）のAPI・テーブル・記録方式のまとめ。
    - **マイグレーション用ロール（テーブルの所有者）**：`prisma migrate deploy`だけに使う。アプリの実行時には使わない。
    - **アプリ用ロール**：スーパーユーザーではなく、`SET`権限（`GRANT SET ON PARAMETER`）も持たない。`audit_logs`は`INSERT`・`SELECT`のみ（`UPDATE`・`DELETE`・`TRUNCATE`・`TRIGGER`を与えない）。テーブルの所有者にしない。
 
-   これにより、アプリ側の脆弱性（SQLインジェクション等）が起きても、監査ログの改ざん・削除ができない。アプリ用ロールを作るSQLの例は、ルートの`.env.example`のコメントに書く（PO判断。要修正-1(b)。**未反映**：`.env.example`は作業担当の権限で読み書きできないため、貼り付け案を作業報告`.reports/`に載せている）。
-   - **起動時チェック（実装済み）**：`NODE_ENV=production`で、DB接続ユーザーがスーパーユーザー（`current_setting('is_superuser')`が`off`以外）なら、APIは起動を止める（`apps/api/src/prisma/assert-not-superuser.ts`、`PrismaService.onModuleInit`から呼ぶ）。開発・テストでは止めない（docker-composeの`POSTGRES_USER`がスーパーユーザーのため）。このチェックは、スーパーユーザー以外の「所有者」や`SET`権限の付与までは検出しない。ロールの設計で守る。
+   これにより、アプリ側の脆弱性（SQLインジェクション等）が起きても、監査ログの改ざん・削除ができない。ロールを作るSQLと確認の手順は、手順書`docs/ops/production-db-roles.md`に書く（PO判断。要修正-1(b)）。アプリ用ロールは、他のロール（定義済みロールを含む）のメンバーにもしない。
+   - **起動時チェック（実装済み）**：本番扱いの環境で、DB接続ユーザーがスーパーユーザー（`current_setting('is_superuser')`が`off`以外）なら、APIは起動を止める（`apps/api/src/prisma/assert-not-superuser.ts`、`PrismaService.onModuleInit`から呼ぶ）。本番扱いにするのは、`NODE_ENV`が`development`・`test`のどちらでもない場合（未設定・空文字・`prod`などを含む。完全一致で判定する）。`development`・`test`では止めない（docker-composeの`POSTGRES_USER`がスーパーユーザーのため）。開発用の起動スクリプト（`pnpm api:dev`、`apps/api`の`start`・`start:dev`・`start:debug`）は`NODE_ENV=development`を明示する。`start:prod`には付けない。`ALLOWED_ORIGINS`の起動チェックも同じ判定を使う（`apps/api/src/common/config/is-production-env.ts`）。このチェックは、スーパーユーザー以外の「所有者」や`SET`権限の付与、ロールのメンバーシップまでは検出しない。ロールの設計と手順書の確認SQLで守る。
    - **宿題**：docker-composeの2ロール化と、本番デプロイでのロール作成・`migrate deploy`の接続分離は、本番デプロイを作るときに行う（PO判断）。
    - ハッシュチェーン（行ごとに前行のハッシュを含める改ざん検知）は、10〜50人規模では過剰として今回は見送る。
 4. **テスト環境への影響（テスト担当への連絡）**：既存e2eは`user.deleteMany`等で後始末をするが、`audit_logs`にはFKがないため影響しない。一方、テストから`audit_logs`を削除・全件消去することはできなくなる。テストは、そのテストで作ったユーザー・申請のIDで絞り込んで検証する（全件数に依存しない）。テストDB全体の初期化は`migrate reset`（スキーマごと作り直し）で行う。
