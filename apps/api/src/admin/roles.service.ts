@@ -5,6 +5,9 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
+  AuditAction,
+  AuditResult,
+  AuditTargetType,
   ErrorCode,
   RoleName,
   type AdminRoleListItemDto,
@@ -12,6 +15,7 @@ import {
 } from '@expense/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { getRoleNamesForUser } from '../auth/user-roles.util';
+import { AuditLogService } from '../audit/audit-log.service';
 
 // GET /admin/users はページネーションを実装しないが、サーバー側で最大100件の
 // ハードリミットを設ける（docs/api/pbi-1-2.md。クライアントに公開するパラメータではない）。
@@ -25,7 +29,12 @@ interface ActiveAdminRow {
 
 @Injectable()
 export class RolesService {
-  constructor(private readonly prisma: PrismaService) {}
+  // AuditLogService は必須依存（AuditModuleが@Globalで公開）。
+  // 単体テストでも必ずモックを登録する。
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly auditLog: AuditLogService,
+  ) {}
 
   /**
    * 指定ユーザーにロールを付与する。
@@ -35,6 +44,7 @@ export class RolesService {
     actorUserId: string,
     targetUserId: string,
     roleId: string,
+    ipAddress: string | null,
   ): Promise<void> {
     this.assertNotSelf(actorUserId, targetUserId);
 
@@ -50,14 +60,35 @@ export class RolesService {
       throw this.notFound();
     }
 
-    await this.prisma.userRole.upsert({
-      where: { userId_roleId: { userId: targetUserId, roleId } },
-      update: {},
-      create: {
-        userId: targetUserId,
-        roleId,
-        grantedById: actorUserId,
-      },
+    // 付与と監査ログを同一トランザクションで行う。
+    // createMany + skipDuplicates（INSERT ... ON CONFLICT DO NOTHING）は、
+    // 同時に同じ付与が来ても原子的に「作られたか」を返す。
+    // すでに保持していた場合（count=0）は何も変わらないので記録しない（応答は201のまま）。
+    await this.prisma.$transaction(async (tx) => {
+      const created = await tx.userRole.createMany({
+        data: [{ userId: targetUserId, roleId, grantedById: actorUserId }],
+        skipDuplicates: true,
+      });
+      if (created.count === 1) {
+        await this.auditLog.record(tx, {
+          actorUserId,
+          action: AuditAction.ROLE_GRANT,
+          result: AuditResult.SUCCESS,
+          targetType: AuditTargetType.USER,
+          targetId: targetUserId,
+          before: this.auditLog.userRoleSnapshot(
+            role.id,
+            role.name as RoleName,
+            false,
+          ),
+          after: this.auditLog.userRoleSnapshot(
+            role.id,
+            role.name as RoleName,
+            true,
+          ),
+          ipAddress,
+        });
+      }
     });
   }
 
@@ -75,6 +106,7 @@ export class RolesService {
     actorUserId: string,
     targetUserId: string,
     roleId: string,
+    ipAddress: string | null,
   ): Promise<void> {
     this.assertNotSelf(actorUserId, targetUserId);
 
@@ -129,7 +161,32 @@ export class RolesService {
         }
       }
 
-      await tx.userRole.delete({ where: { id: userRole.id } });
+      // 剥奪と監査ログを同一トランザクションで行う。
+      // 同時に別のリクエストが先に剥奪していた場合（count=0）は404（ログは書かない）。
+      const deleted = await tx.userRole.deleteMany({
+        where: { id: userRole.id, userId: targetUserId, roleId },
+      });
+      if (deleted.count === 0) {
+        throw this.notFound();
+      }
+      await this.auditLog.record(tx, {
+        actorUserId,
+        action: AuditAction.ROLE_REVOKE,
+        result: AuditResult.SUCCESS,
+        targetType: AuditTargetType.USER,
+        targetId: targetUserId,
+        before: this.auditLog.userRoleSnapshot(
+          role.id,
+          role.name as RoleName,
+          true,
+        ),
+        after: this.auditLog.userRoleSnapshot(
+          role.id,
+          role.name as RoleName,
+          false,
+        ),
+        ipAddress,
+      });
     });
   }
 

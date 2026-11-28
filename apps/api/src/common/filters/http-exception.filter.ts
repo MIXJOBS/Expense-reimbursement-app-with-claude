@@ -29,11 +29,11 @@ export class HttpExceptionFilter implements ExceptionFilter {
     }
 
     // 想定外の例外（NestJSの例外クラスを経由しないもの）は500として扱い、
-    // 内部情報を一切返さない。サーバー側ログにのみ詳細を出す。
-    this.logger.error(
-      exception instanceof Error ? exception.message : 'Unknown error',
-      exception instanceof Error ? exception.stack : undefined,
-    );
+    // 内部情報を一切返さない。サーバー側ログには、エラー名・コード・スタックの
+    // 位置情報だけを出す。例外メッセージ（Prismaでは入力値やクエリ周辺のコードを
+    // 含み得る）は出さない（横断ルール5・PBI6 要修正-2）。
+    const { summary, stackLocations } = describeUnexpectedException(exception);
+    this.logger.error(summary, stackLocations);
 
     const body: ApiErrorBody = {
       code: ErrorCode.INTERNAL_ERROR,
@@ -95,4 +95,42 @@ export class HttpExceptionFilter implements ExceptionFilter {
       message: exception.message,
     };
   }
+}
+
+// 想定外の例外を、機微情報を含まない形に要約する（ログ用）。
+// - エラー名：コンストラクタ名・name のうち、識別子として妥当な文字だけ。
+// - コード：Prisma（P2002 等）・pg 由来の短い英数字コードだけ。
+// - スタック：先頭のメッセージ部分を捨て、"    at ..." の位置情報の行だけ。
+export function describeUnexpectedException(exception: unknown): {
+  summary: string;
+  stackLocations: string | undefined;
+} {
+  if (!(exception instanceof Error)) {
+    return {
+      summary: 'Unexpected exception: name=unknown',
+      stackLocations: undefined,
+    };
+  }
+  const name = sanitizeToken(exception.name, 64) ?? 'Error';
+  const code = sanitizeToken((exception as { code?: unknown }).code, 16);
+  const summary = `Unexpected exception: name=${name}${code ? ` code=${code}` : ''}`;
+  // メッセージに改行＋"    at " を含む入力があっても位置情報に紛れないよう、
+  // 先にメッセージ部分を取り除いてから、位置情報の行だけを残す。
+  const rawStack = exception.stack ?? '';
+  const withoutMessage = exception.message
+    ? rawStack.split(exception.message).join('')
+    : rawStack;
+  const locations = withoutMessage
+    .split('\n')
+    .filter((line) => /^\s+at\s/.test(line))
+    .join('\n');
+  return { summary, stackLocations: locations || undefined };
+}
+
+function sanitizeToken(value: unknown, maxLength: number): string | undefined {
+  return typeof value === 'string' &&
+    value.length <= maxLength &&
+    /^[A-Za-z0-9_.-]+$/.test(value)
+    ? value
+    : undefined;
 }

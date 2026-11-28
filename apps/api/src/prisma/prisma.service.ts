@@ -5,6 +5,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
+import { assertNotSuperuserInProduction } from './assert-not-superuser';
 
 /**
  * PrismaClient をNestJSのライフサイクルに乗せるための薄いラッパー。
@@ -22,6 +23,8 @@ export class PrismaService
 
   async onModuleInit() {
     await this.$connect();
+    // 本番でスーパーユーザー接続なら起動しない（監査ログの追記専用トリガーが無効化できてしまう）。
+    await assertNotSuperuserInProduction(this);
     this.logger.log('Prisma connected to database');
   }
 

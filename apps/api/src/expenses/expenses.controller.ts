@@ -16,6 +16,7 @@ import type {
   ExpenseRequestListResponseDto,
 } from '@expense/shared';
 import { CurrentUser } from '../auth/current-user.decorator';
+import { ClientIp } from '../common/decorators/client-ip.decorator';
 import type { AuthenticatedUser } from '../auth/current-user';
 import { ExpensesService } from './expenses.service';
 import { UpsertExpenseRequestDto } from './dto/upsert-expense-request.dto';
@@ -34,8 +35,9 @@ export class ExpensesController {
   async create(
     @CurrentUser() currentUser: AuthenticatedUser,
     @Body() dto: UpsertExpenseRequestDto,
+    @ClientIp() ipAddress: string | null,
   ): Promise<ExpenseRequestDto> {
-    return this.expensesService.create(currentUser.id, dto);
+    return this.expensesService.create(currentUser.id, dto, ipAddress);
   }
 
   @Get()
@@ -59,8 +61,9 @@ export class ExpensesController {
     @CurrentUser() currentUser: AuthenticatedUser,
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpsertExpenseRequestDto,
+    @ClientIp() ipAddress: string | null,
   ): Promise<ExpenseRequestDto> {
-    return this.expensesService.update(currentUser.id, id, dto);
+    return this.expensesService.update(currentUser.id, id, dto, ipAddress);
   }
 
   @Delete(':id')
@@ -68,8 +71,9 @@ export class ExpensesController {
   async remove(
     @CurrentUser() currentUser: AuthenticatedUser,
     @Param('id', new ParseUUIDPipe()) id: string,
+    @ClientIp() ipAddress: string | null,
   ): Promise<void> {
-    await this.expensesService.remove(currentUser.id, id);
+    await this.expensesService.remove(currentUser.id, id, ipAddress);
   }
 
   @Post(':id/submit')
@@ -77,7 +81,8 @@ export class ExpensesController {
   async submit(
     @CurrentUser() currentUser: AuthenticatedUser,
     @Param('id', new ParseUUIDPipe()) id: string,
+    @ClientIp() ipAddress: string | null,
   ): Promise<ExpenseRequestDto> {
-    return this.expensesService.submit(currentUser.id, id);
+    return this.expensesService.submit(currentUser.id, id, ipAddress);
   }
 }

@@ -32,8 +32,9 @@ import { assertAllowedOriginsConfigured } from './config/allowed-origins';
   ],
 })
 export class CommonModule implements OnModuleInit {
-  // NODE_ENV=production で ALLOWED_ORIGINS が未設定のまま起動することを防ぐための
-  // チェック。onModuleInit は Nest のDIコンテナがモジュールを初期化するタイミング
+  // 本番扱い（NODE_ENV が development・test 以外。未設定を含む）で ALLOWED_ORIGINS が
+  // 未設定のまま起動することを防ぐためのチェック。
+  // onModuleInit は Nest のDIコンテナがモジュールを初期化するタイミング
   // （本番起動のNestFactory.create()・e2eテストのTest.createTestingModule().compile()
   // どちらでも必ず呼ばれる）で一度だけ実行されるため、ここでチェックすれば
   // 「本番で許可オリジン未設定のまま動くことを防ぐ」という起動時ガードとして機能する。

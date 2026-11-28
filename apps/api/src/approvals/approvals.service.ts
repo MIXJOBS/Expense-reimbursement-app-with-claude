@@ -3,8 +3,11 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { ExpenseRequest } from '@prisma/client';
+import { ExpenseRequest, Prisma } from '@prisma/client';
 import {
+  AuditAction,
+  AuditResult,
+  AuditTargetType,
   APPROVAL_LIST_MAX_ITEMS,
   ErrorCode,
   ExpenseStatus,
@@ -15,10 +18,14 @@ import {
   type ExpenseRequestDto,
 } from '@expense/shared';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuditLogService } from '../audit/audit-log.service';
 
 @Injectable()
 export class ApprovalsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly auditLog: AuditLogService,
+  ) {}
 
   /**
    * 承認対象の一覧。approverId=自分・申請者が自分でない・SUBMITTEDのみ。
@@ -55,25 +62,23 @@ export class ApprovalsService {
 
   /**
    * 承認。2段階方式：
-   * 1. approverId・applicantId not self のみで存在確認 → 無ければ404。
-   * 2. status条件つきupdateMany。0件なら409（同時実行の敗者を含む）。
+   * 1. 申請行をロックして読む（approverId・applicantId not self が条件）→ 無ければ404。
+   * 2. status条件つきupdateMany。0件なら409（同時実行の敗者を含む。Txごとロールバック）。
+   * 更新と監査ログは同一トランザクション。
    */
-  async approve(approverId: string, id: string): Promise<ExpenseRequestDto> {
-    await this.assertAssigned(approverId, id);
-
-    const result = await this.prisma.expenseRequest.updateMany({
-      where: {
-        id,
-        approverId,
-        applicantId: { not: approverId },
-        status: { in: EXPENSE_APPROVABLE_STATUSES },
-      },
+  async approve(
+    approverId: string,
+    id: string,
+    ipAddress: string | null,
+  ): Promise<ExpenseRequestDto> {
+    return this.transition({
+      approverId,
+      id,
+      ipAddress,
+      action: AuditAction.EXPENSE_APPROVE,
+      allowedStatuses: EXPENSE_APPROVABLE_STATUSES,
       data: { status: ExpenseStatus.APPROVED },
     });
-    if (result.count === 0) {
-      throw this.conflictInvalidStatus();
-    }
-    return this.reload(approverId, id);
   }
 
   /** 差し戻し。statusとreturnReasonは単一のUPDATEで同時に書く。 */
@@ -81,46 +86,90 @@ export class ApprovalsService {
     approverId: string,
     id: string,
     reason: string,
+    ipAddress: string | null,
   ): Promise<ExpenseRequestDto> {
-    await this.assertAssigned(approverId, id);
-
-    const result = await this.prisma.expenseRequest.updateMany({
-      where: {
-        id,
-        approverId,
-        applicantId: { not: approverId },
-        status: { in: EXPENSE_RETURNABLE_STATUSES },
-      },
+    return this.transition({
+      approverId,
+      id,
+      ipAddress,
+      action: AuditAction.EXPENSE_RETURN,
+      allowedStatuses: EXPENSE_RETURNABLE_STATUSES,
       data: { status: ExpenseStatus.RETURNED, returnReason: reason },
     });
-    if (result.count === 0) {
-      throw this.conflictInvalidStatus();
-    }
-    return this.reload(approverId, id);
   }
 
-  private async assertAssigned(approverId: string, id: string): Promise<void> {
-    const existing = await this.prisma.expenseRequest.findFirst({
-      where: { id, approverId, applicantId: { not: approverId } },
-      select: { id: true },
+  private async transition(p: {
+    approverId: string;
+    id: string;
+    ipAddress: string | null;
+    action:
+      typeof AuditAction.EXPENSE_APPROVE | typeof AuditAction.EXPENSE_RETURN;
+    allowedStatuses: ExpenseStatus[];
+    data: Prisma.ExpenseRequestUpdateManyMutationInput;
+  }): Promise<ExpenseRequestDto> {
+    const { approverId, id } = p;
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const existing = await this.lockAssigned(tx, approverId, id);
+      if (!existing) {
+        throw this.notFound();
+      }
+
+      const result = await tx.expenseRequest.updateMany({
+        where: {
+          id,
+          approverId,
+          applicantId: { not: approverId },
+          status: { in: p.allowedStatuses },
+        },
+        data: p.data,
+      });
+      if (result.count === 0) {
+        throw this.conflictInvalidStatus();
+      }
+
+      // 更新後は status がSUBMITTEDでなくなっているため、findOneの絞り込みは使わない。
+      const after = await tx.expenseRequest.findFirst({
+        where: { id, approverId, applicantId: { not: approverId } },
+      });
+      if (!after) {
+        throw this.notFound();
+      }
+
+      await this.auditLog.record(tx, {
+        actorUserId: approverId,
+        action: p.action,
+        result: AuditResult.SUCCESS,
+        targetType: AuditTargetType.EXPENSE_REQUEST,
+        targetId: id,
+        before: this.auditLog.expenseSnapshot(existing),
+        after: this.auditLog.expenseSnapshot(after),
+        ipAddress: p.ipAddress,
+      });
+      return after;
     });
-    if (!existing) {
-      throw this.notFound();
-    }
+    return this.toDto(updated);
   }
 
-  // 更新後は status がSUBMITTEDでなくなっているため、findOneの絞り込みは使わない。
-  private async reload(
+  // 担当している（approverId=自分・申請者は自分でない）申請の行ロックを取って読む。
+  // 同時の承認・差し戻しを直列化し、監査ログのbefore/afterを正確にする。
+  private async lockAssigned(
+    tx: Prisma.TransactionClient,
     approverId: string,
     id: string,
-  ): Promise<ExpenseRequestDto> {
-    const updated = await this.prisma.expenseRequest.findFirst({
+  ): Promise<ExpenseRequest | null> {
+    const locked = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+      SELECT "id" FROM "expense_requests"
+      WHERE "id" = ${id}::uuid
+        AND "approverId" = ${approverId}::uuid
+        AND "applicantId" <> ${approverId}::uuid
+      FOR UPDATE
+    `);
+    if (locked.length === 0) {
+      return null;
+    }
+    return tx.expenseRequest.findFirst({
       where: { id, approverId, applicantId: { not: approverId } },
     });
-    if (!updated) {
-      throw this.notFound();
-    }
-    return this.toDto(updated);
   }
 
   private toDto(expense: ExpenseRequest): ExpenseRequestDto {

@@ -3,14 +3,13 @@
 // 決定事項（CLAUDE.md参照）:
 // - ID は UUID を使う（モデル追加時は `id String @id @default(uuid()) @db.Uuid` を基本形にする）
 // - 金額は円の整数（Decimal/Floatではなく Int、小数のない円単位）を使う
-// - 認証はCookieセッション（セッションはPostgreSQLに保存する想定。Session等のモデルは
-//   認証フローの仕様確定後に追加する）
+// - 認証はCookieセッション（セッションはPostgreSQLの Session モデルに保存する）
 //
 // 以下、PBI1（ログイン・ログアウト）・PBI2（ロールと権限）で確定した設計を反映。
 // PBI3（経費申請の登録・編集）で ExpenseRequest を追加。
 // PBI4（承認・差し戻し）で ExpenseRequest に approverId・returnReason を追加。
-// 経理確認（確認者・確認日時等のカラム）はPBI5のスコープのため、
-// 現時点では追加しない（詳細は ExpenseRequest モデルのコメント参照）。
+// PBI6（監査ログ）で AuditLog を追加（追記専用。トリガーはマイグレーションに手書き）。
+// 経理確認（確認者・確認日時等のカラム）は未実装（詳細は ExpenseRequest モデルのコメント参照）。
 
 generator client {
   provider = "prisma-client-js"
@@ -47,23 +46,24 @@ model User {
   // 退職者等の論理削除フラグ。
   // - false の場合ログイン不可（エラーは AUTH_INVALID_CREDENTIALS に統一。
   //   ユーザー列挙対策として「無効化されている」ことは個別に教えない）
-  // - false にする操作（無効化実行）は現時点のAPIスコープ外（将来PBI）。
-  //   ただし「無効化された瞬間に全セッション破棄」は要件のため、無効化を実行する
-  //   Service（将来実装）は必ず User.isActive 更新と Session 一括失効を
-  //   同一トランザクションで行う設計にする（スキーマ上は Session.userId の
-  //   リレーションで一括 UPDATE できる形になっている）。
+  // - セッション検証（SessionsService.validateSession）でも false のユーザーは拒否するため、
+  //   発行済みのセッションも次のリクエストから使えなくなる。
+  // - false にする操作（無効化実行）のAPIは未実装（将来PBI）。実装する Service は、
+  //   User.isActive の更新と Session の一括失効（revokedAt の設定）を同一トランザクションで
+  //   行う設計にする（Session.userId で一括 UPDATE できる）。
   isActive Boolean @default(true)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   roles                    UserRole[]       @relation("UserRoleToUser")
-  grantedRoles             UserRole[]       @relation("UserRoleGrantedBy") // 自分が付与したロール付与履歴
+  grantedRoles             UserRole[]       @relation("UserRoleGrantedBy") // 自分が付与し、現在も有効なロール付与（履歴は監査ログ）
   sessions                 Session[]
   expenseRequests          ExpenseRequest[] @relation("ExpenseRequestApplicant") // 自分が申請者である経費申請（PBI3）
   approvingExpenseRequests ExpenseRequest[] @relation("ExpenseRequestApprover") // 自分が承認者（上長）である経費申請（PBI4）
 
-  // 申請・監査ログ等の業務データが紐づく可能性があるため、Userはハードデリート不可の方針。
+  // 申請等の業務データが紐づき、監査ログにも操作者・対象のIDが残る（audit_logs には
+  // 外部キーを張らないため、DBの参照制約では守られない）。そのため、Userはハードデリート不可の方針。
   // Userへの参照は基本的に onDelete: Restrict または SetNull とし、安易な連鎖削除を防ぐ。
   // ただし UserRole・Session は「Userに従属し、Userが消えたら一緒に消えるべきデータ」
   // であるため例外的に Cascade とする（これはUser自体の削除経路を提供する意味ではなく、
@@ -91,9 +91,9 @@ model Role {
 // ============================================================
 // UserRole（User と Role の中間テーブル）
 // ============================================================
-// - 誰が・いつ付与したかを残す（監査ログ本体はSprint3だが、最低限の
-//   付与者・付与日時はここに持たせておくことで、監査ログInterceptor側で
-//   変更前後の値を組み立てやすくする）
+// - grantedById・grantedAt は、現在有効な付与の付与者と付与日時（剥奪すると行ごと消える）。
+// - 付与・剥奪の履歴（変更前後の値）は監査ログ（AuditLog。PBI6）に残る。RolesService が
+//   AuditLogService で、ロール変更と同一トランザクション内に記録する。
 model UserRole {
   id String @id @default(uuid()) @db.Uuid
 
@@ -108,16 +108,12 @@ model UserRole {
 
   grantedAt DateTime @default(now())
 
-  // 「最後のADMIN剥奪防止」チェックの排他制御（確定：悲観ロック）：
-  // DELETE /admin/users/:userId/roles/:roleId の処理中、Prismaの $transaction 内で
-  // ADMINロールを持つ UserRole 行集合に対して SELECT ... FOR UPDATE 相当の
-  // 行ロックをかけた上で件数を数え、剥奪後に0件になる場合は拒否する。
-  // Prismaの標準API（findMany等）は FOR UPDATE を発行できないため、実装時は
-  // $transaction 内で $queryRaw（Prisma.sql）を使い
-  // 「SELECT ... FROM user_roles ... WHERE role_id = :adminRoleId FOR UPDATE」
-  // を発行してロック取得→カウント→DELETEを同一トランザクションで行う方式を取る
-  // （楽観ロック(updatedAtやバージョン列での競合検出)ではなく、悲観ロックで
-  // 同時剥奪のレースコンディションそのものを未然に防ぐ）。
+  // 「最後のADMIN剥奪防止」チェックの排他制御（悲観ロック。RolesService.revokeRole）：
+  // Prismaの標準API（findMany等）は FOR UPDATE を発行できないため、$transaction 内で
+  // $queryRaw（Prisma.sql）を使い、ADMINロールを持つ user_roles 行と対応する users 行を
+  // FOR UPDATE OF ur, u でロックする。対象を除く isActive=true の保持者が0人になる場合は
+  // 拒否する。ロック取得→カウント→削除→監査ログの記録を同一トランザクションで行う
+  // （楽観ロックではなく悲観ロックで、同時剥奪のレースコンディションを防ぐ）。
   @@unique([userId, roleId]) // 同一ユーザーに同一ロールを重複付与しない
   @@map("user_roles")
 }
@@ -133,9 +129,9 @@ model UserRole {
 //   User→UserRoleを引いて権限判定する方針。これにより、管理者がロールを外した瞬間、
 //   次のリクエストから即座に反映される（セッション無効化やキャッシュ破棄の仕組みを
 //   別途作る必要がない）。
-// - ログイン成功時のセッションID再発行（セッション固定対策）は、
-//   「新規Sessionレコードを作り、旧レコードをrevoke（revokedAt設定）する」
-//   運用で実現できる形にしておく。
+// - ログイン成功時は必ず新しいトークンの Session レコードを作る（セッション固定対策。
+//   クライアントが送ってきたセッションIDは引き継がない）。ログイン時に既存の
+//   Session は失効させない。revokedAt を設定するのは現状ログアウトだけ。
 model Session {
   id String @id @default(uuid()) @db.Uuid
 
@@ -153,20 +149,17 @@ model Session {
   // この時刻を過ぎたら無条件で失効（スライディング判定より優先して先にチェック可）。
   expiresAt DateTime
 
-  // 論理失効（ログアウト・再発行・無効化実行時にセット）。
-  // 退職者無効化（isActive=false）実行時は、対象Userの全Session.revokedAtを
-  // 一括更新することで「即ログアウト」を実現する想定（実行API自体は将来PBI）。
+  // 論理失効。現状はログアウト時にセットする。
+  // 退職者無効化（isActive=false）の実行API（未実装。将来PBI）では、対象Userの
+  // 全Session.revokedAtを一括更新する想定（User.isActive のコメント参照）。
   revokedAt DateTime?
 
   createdAt DateTime @default(now())
 
   // スライディング有効期限の判定基準：now - lastSeenAt > 30分 の場合は失効。
-  // 更新方針（確定）：毎リクエストではなく「前回更新から1分以上経過していた場合のみ
-  // UPDATE する」間引きを行う。これにより書き込み負荷を抑えつつ、スライディング判定
+  // 毎リクエストではなく、前回更新から1分以上経過していた場合のみ UPDATE する
+  // （SessionsService.touchLastSeenAt）。書き込み負荷を抑えつつ、スライディング判定
   // (30分)の精度には実用上影響しない（1分の誤差は許容範囲）。
-  // 実装イメージ（方針のみ、コードはここでは書かない）：
-  //   if (now - session.lastSeenAt >= 1min) { UPDATE lastSeenAt = now }
-  //   else { UPDATE はスキップし、既存の lastSeenAt のまま判定続行 }
   lastSeenAt DateTime @default(now())
 
   @@index([userId])
@@ -182,8 +175,8 @@ model Session {
 //   - approverId：提出(submit)時に申請者のUser.managerIdを保存する「承認者ID」。
 //     承認・差し戻し操作の対象を絞り込むために使う（詳細はdocs/api/pbi-4.md）。
 //   - returnReason：差し戻し時の理由（必須・500文字まで）。
-// 経理確認（確認者・確認日時等）はPBI5のスコープのため、今回は追加しない
-// （詳細はdocs/api/pbi-3.md・docs/api/pbi-4.mdの「判断に迷ったところ」を参照）。
+// 経理確認（確認者・確認日時等）は未実装のため、カラムはまだ無い
+// （経緯はdocs/api/pbi-3.md・docs/api/pbi-4.mdの「判断に迷ったところ」を参照）。
 model ExpenseRequest {
   id String @id @default(uuid()) @db.Uuid
 
@@ -239,4 +232,76 @@ model ExpenseRequest {
   // [approverId, status]の複合インデックスを張る（PBI4）。
   @@index([approverId, status])
   @@map("expense_requests")
+}
+
+// ============================================================
+// AuditLog（監査ログ。PBI6）
+// ============================================================
+// 誰が・いつ・何に・何をしたか・結果・変更前後の値・IPアドレスを残す、追記専用のテーブル。
+// 設計の詳細は docs/api/pbi-6.md を参照。
+//
+// 追記専用の担保（二重）：
+// - アプリ：このテーブルへの update / updateMany / upsert / delete / deleteMany を
+//   呼ぶコードを書かない（作成は AuditLogService.record の create のみ）。
+// - DB：マイグレーションに手書きSQLで BEFORE UPDATE OR DELETE（行単位）と
+//   BEFORE TRUNCATE（文単位）のトリガーを追加し、例外を投げて拒否する。
+//   Prismaのスキーマ記法ではトリガーを表現できないため、マイグレーションSQL
+//   （migrations/20261125000000_add_audit_logs/）に手書きしている。
+//   本番では接続ロールの分離も必須（docs/ops/production-db-roles.md）。
+//
+// 外部キーを張らない理由（意図的）：
+// - actorUserId / targetId は「記録した時点のID」の事実であり、対象（申請の削除など）が
+//   後で消えてもログは残す必要がある（targetId は種類により参照先が違う多態参照でもある）。
+// - 参照整合性のためにユーザー行・申請行の削除（e2eテストの後始末を含む）が監査ログに
+//   邪魔されたり、逆に監査ログの追記専用トリガーとFKの連鎖動作が衝突したりするのを避ける。
+// - 値の正しさは AuditLogService が書き込み時に保証する（呼び出し元は認証済みの
+//   ユーザーIDと、同一トランザクション内で操作した対象のIDしか渡さない）。
+//
+// 機微情報を入れない：before / after はホワイトリスト方式（packages/shared の
+// AUDIT_SNAPSHOT_FIELDS）で作る。password・passwordHash・Cookie・セッショントークンの
+// 入る列・入り得る自由記述の列は、このテーブルに存在しない。
+model AuditLog {
+  id String @id @default(uuid()) @db.Uuid
+
+  // いつ。DB側の clock_timestamp()（INSERT文の実行時刻）で採番する。
+  // now() はトランザクション開始時刻になり、行ロックを待った側が「先に開始したが後に
+  // コミットした」順序逆転を起こし得るため使わない（実行順＝記録順にする）。
+  // タイムゾーンの取り違えを避けるため、他のモデルと違い timestamptz にする。
+  occurredAt DateTime @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(3)
+
+  // 誰が。未認証の操作（ログイン失敗）は null。User への外部キーは張らない（上記参照）。
+  actorUserId String? @db.Uuid
+  // ログイン失敗時に入力されたメールアドレス（それ以外は null）。
+  // 利用者が誤ってパスワードをメール欄に入れた可能性に備え、LoginDto の @IsEmail() を
+  // 通った値だけを、254文字までで保存する（詳細は docs/api/pbi-6.md）。
+  actorEmail String? @db.VarChar(254)
+
+  // 何を / 結果。packages/shared の AuditAction / AuditResult / AuditFailureCode の値を
+  // 文字列で保存する（Role.name・ExpenseRequest.status と同じ方針。Enumカラムにしない）。
+  action      String
+  result      String
+  failureCode String?
+
+  // 何に。packages/shared の AuditTargetType と対象のID。
+  // 対象が特定できない場合（存在しないメールアドレスでのログイン失敗）は targetId が null。
+  targetType String
+  targetId   String? @db.Uuid
+
+  // 変更前後の値。フラットなJSON（ネストなし）、8KB以内、ホワイトリストの項目のみ。
+  // 状態を変えない操作（ログイン・ログアウト等）や、新規作成の before・削除の after は null。
+  before Json?
+  after  Json?
+
+  // 操作元のIPアドレス（req.ip。IPv6なら最大45文字）。
+  // TRUST_PROXY の設定次第でリバースプロキシのIPになる点に注意（docs/api/pbi-6.md）。
+  ipAddress String? @db.VarChar(45)
+
+  // 閲覧API（GET /admin/audit-logs）は occurredAt 降順＋id降順で並べ、
+  // 操作者（actorUserId・actorEmail）・対象・期間で絞り込む。それぞれに対応するインデックス。
+  @@index([occurredAt])
+  @@index([actorUserId, occurredAt])
+  // actorEmail の完全一致での絞り込み（特定のメールアドレスへの攻撃の調査。PO判断No.4）。
+  @@index([actorEmail, occurredAt])
+  @@index([targetType, targetId, occurredAt])
+  @@map("audit_logs")
 }

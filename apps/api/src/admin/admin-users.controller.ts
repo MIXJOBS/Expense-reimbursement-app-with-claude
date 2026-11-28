@@ -16,6 +16,7 @@ import type {
   AdminUserListResponseDto,
 } from '@expense/shared';
 import { CurrentUser } from '../auth/current-user.decorator';
+import { ClientIp } from '../common/decorators/client-ip.decorator';
 import type { AuthenticatedUser } from '../auth/current-user';
 import { RoleGuard } from './role.guard';
 import { Roles } from './roles.decorator';
@@ -55,8 +56,14 @@ export class AdminUsersController {
     @CurrentUser() currentUser: AuthenticatedUser,
     @Param('userId', new ParseUUIDPipe()) userId: string,
     @Body() dto: GrantRoleDto,
+    @ClientIp() ipAddress: string | null,
   ): Promise<void> {
-    await this.rolesService.grantRole(currentUser.id, userId, dto.roleId);
+    await this.rolesService.grantRole(
+      currentUser.id,
+      userId,
+      dto.roleId,
+      ipAddress,
+    );
   }
 
   @Delete('users/:userId/roles/:roleId')
@@ -65,7 +72,13 @@ export class AdminUsersController {
     @CurrentUser() currentUser: AuthenticatedUser,
     @Param('userId', new ParseUUIDPipe()) userId: string,
     @Param('roleId', new ParseUUIDPipe()) roleId: string,
+    @ClientIp() ipAddress: string | null,
   ): Promise<void> {
-    await this.rolesService.revokeRole(currentUser.id, userId, roleId);
+    await this.rolesService.revokeRole(
+      currentUser.id,
+      userId,
+      roleId,
+      ipAddress,
+    );
   }
 }

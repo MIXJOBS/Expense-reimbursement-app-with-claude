@@ -19,6 +19,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ForbiddenException } from '@nestjs/common';
 import { RolesService } from './roles.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuditLogService } from '../audit/audit-log.service';
 import { ErrorCode, RoleName } from '@expense/shared';
 
 describe('RolesService', () => {
@@ -29,6 +30,7 @@ describe('RolesService', () => {
     userRole: {
       findUnique: jest.Mock;
       delete: jest.Mock;
+      deleteMany: jest.Mock;
       count: jest.Mock;
     };
     $transaction: jest.Mock;
@@ -38,6 +40,8 @@ describe('RolesService', () => {
   const actorUserId = 'actor-admin-uuid';
   const targetUserId = 'target-admin-uuid';
   const adminRoleId = 'admin-role-uuid';
+  const ipAddress = '127.0.0.1';
+  let auditLog: { record: jest.Mock; userRoleSnapshot: jest.Mock };
 
   beforeEach(async () => {
     prisma = {
@@ -46,6 +50,7 @@ describe('RolesService', () => {
       userRole: {
         findUnique: jest.fn(),
         delete: jest.fn(),
+        deleteMany: jest.fn(),
         count: jest.fn(),
       },
       // RolesService が「剥奪後にADMINが0人になるかどうか」の確認と
@@ -55,8 +60,18 @@ describe('RolesService', () => {
       $queryRaw: jest.fn(),
     };
 
+    // RolesService は AuditLogService を必須依存として受け取るため、必ずモックを登録する。
+    auditLog = {
+      record: jest.fn().mockResolvedValue(undefined),
+      userRoleSnapshot: jest.fn(),
+    };
+
     const moduleRef: TestingModule = await Test.createTestingModule({
-      providers: [RolesService, { provide: PrismaService, useValue: prisma }],
+      providers: [
+        RolesService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: AuditLogService, useValue: auditLog },
+      ],
     }).compile();
 
     service = moduleRef.get(RolesService);
@@ -86,7 +101,7 @@ describe('RolesService', () => {
       ]);
 
       await expect(
-        service.revokeRole(actorUserId, targetUserId, adminRoleId),
+        service.revokeRole(actorUserId, targetUserId, adminRoleId, ipAddress),
       ).rejects.toMatchObject({
         response: expect.objectContaining({
           code: ErrorCode.FORBIDDEN_LAST_ADMIN,
@@ -95,6 +110,8 @@ describe('RolesService', () => {
 
       // 最後の管理者保護に引っかかった場合、実際のDELETEは実行されてはならない。
       expect(prisma.userRole.delete).not.toHaveBeenCalled();
+      expect(prisma.userRole.deleteMany).not.toHaveBeenCalled();
+      expect(auditLog.record).not.toHaveBeenCalled();
     });
 
     it('拒否時はForbiddenException（403相当）として例外を投げる', async () => {
@@ -116,7 +133,7 @@ describe('RolesService', () => {
       ]);
 
       await expect(
-        service.revokeRole(actorUserId, targetUserId, adminRoleId),
+        service.revokeRole(actorUserId, targetUserId, adminRoleId, ipAddress),
       ).rejects.toBeInstanceOf(ForbiddenException);
     });
   });
@@ -124,7 +141,7 @@ describe('RolesService', () => {
   describe('revokeRole - 自分自身のロール変更は不可 (FORBIDDEN_SELF_ROLE_CHANGE)', () => {
     it('actorUserIdとtargetUserIdが同一の場合、最後の管理者チェックより先に拒否する', async () => {
       await expect(
-        service.revokeRole(actorUserId, actorUserId, adminRoleId),
+        service.revokeRole(actorUserId, actorUserId, adminRoleId, ipAddress),
       ).rejects.toMatchObject({
         response: expect.objectContaining({
           code: ErrorCode.FORBIDDEN_SELF_ROLE_CHANGE,
